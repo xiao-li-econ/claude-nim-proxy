@@ -2,11 +2,12 @@
 
 A thin local translator that lets Claude Code use NVIDIA NIM models through the Anthropic Messages API.
 
-Phase 1 is implemented on the `feature/phase-1-translators` branch. It provides the
-`claude-nim` command skeleton, strict typed configuration, pure Anthropic/OpenAI request
-and response translators, and an incremental SSE translation state machine. The networked
-gateway, model catalog, credential storage, and one-command runner are implemented in the
-later phases described in [`plan.md`](plan.md).
+The current implementation includes the Phase 1 translators and the Phase 2 local
+gateway. It provides strict typed configuration, Anthropic/OpenAI request and response
+translation, incremental SSE translation, an authenticated loopback HTTP gateway, an
+NVIDIA upstream client, Anthropic-style error conversion, timeouts, and cancellation
+handling. The model catalog, OS credential-store commands, and one-command Claude Code
+runner are implemented in the later phases described in [`plan.md`](plan.md).
 
 ## Current CLI
 
@@ -17,8 +18,20 @@ uv run claude-nim --help
 uv run claude-nim run --help
 ```
 
-The Phase 1 `run`, `serve`, `auth`, `models`, and `doctor` commands are skeletons and do
-not yet make network requests or launch Claude Code.
+`serve` now starts the local gateway. It requires an explicitly selected NVIDIA model
+and, for the normal hosted upstream, an `NVIDIA_API_KEY` environment variable:
+
+```bash
+NVIDIA_API_KEY=nvapi-... \
+  uv run claude-nim serve --model nvidia/nemotron-3-super-120b-a12b
+```
+
+The generated local bearer token and base URL are printed to standard error as an
+export-ready snippet. The token can instead be supplied through `--token-stdin` or a
+mode-`0600` file passed to `--token-file`.
+
+The `run`, `auth`, `models`, and `doctor` commands remain skeletons in this phase; they
+do not yet launch Claude Code or manage persistent credentials and model metadata.
 
 ## Architecture
 
