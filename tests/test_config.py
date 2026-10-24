@@ -91,6 +91,11 @@ debug = false
         ("listen_port = '8080'\n", "listen_port must be an integer"),
         ("context_window = 0\n", "context_window must be positive"),
         ("debug = 'perhaps'\n", "debug must be a boolean"),
+        (
+            "upstream_base_url = 'https://user:secret@example.test/v1'\n",
+            "must not contain credentials",
+        ),
+        ("upstream_base_url = 'not-a-url'\n", "must be a valid HTTP"),
     ],
 )
 def test_invalid_config_is_rejected(tmp_path: Path, content: str, message: str) -> None:

@@ -162,6 +162,7 @@ async def test_models_endpoint_returns_reversible_gateway_alias(fake_upstream) -
         running_gateway(
             fake_upstream.base_url,
             model_ids=("nvidia/second-model",),
+            model_display_names={"nvidia/second-model": "Second NVIDIA Model (NIM)"},
         ) as server,
         aiohttp.ClientSession() as session,
         session.get(
@@ -181,11 +182,65 @@ async def test_models_endpoint_returns_reversible_gateway_alias(fake_upstream) -
             },
             {
                 "id": "anthropic-nim/nvidia/second-model",
-                "display_name": "NVIDIA nvidia/second-model (NIM)",
+                "display_name": "Second NVIDIA Model (NIM)",
                 "description": "NVIDIA NIM model",
             },
         ]
     }
+
+
+@pytest.mark.asyncio
+async def test_image_support_is_resolved_per_requested_model(fake_upstream) -> None:
+    async with (
+        running_gateway(
+            fake_upstream.base_url,
+            supports_images=True,
+            known_model_ids=("nvidia/text-model", "nvidia/vision-model"),
+            model_image_support={
+                "nvidia/text-model": False,
+                "nvidia/vision-model": True,
+            },
+        ) as server,
+        aiohttp.ClientSession() as session,
+    ):
+        image_request = {
+            "model": "anthropic-nim/nvidia/vision-model",
+            "max_tokens": 100,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": "aW1hZ2U=",
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+        async with session.post(
+            f"{server.base_url}/v1/messages",
+            json=image_request,
+            headers=auth_headers(),
+        ) as response:
+            assert response.status == 200
+
+        image_request["model"] = "anthropic-nim/nvidia/unknown-model"
+        async with session.post(
+            f"{server.base_url}/v1/messages",
+            json=image_request,
+            headers=auth_headers(),
+        ) as response:
+            assert response.status == 400
+            body = await response.json()
+            assert body["error"]["type"] == "invalid_request_error"
+
+    assert fake_upstream.requests[0]["body"]["model"] == "nvidia/vision-model"
+    assert fake_upstream.requests[0]["body"]["messages"][0]["content"][0]["image_url"]
 
 
 @pytest.mark.asyncio

@@ -2,12 +2,13 @@
 
 A thin local translator that lets Claude Code use NVIDIA NIM models through the Anthropic Messages API.
 
-The current implementation includes the Phase 1 translators and the Phase 2 local
-gateway. It provides strict typed configuration, Anthropic/OpenAI request and response
-translation, incremental SSE translation, an authenticated loopback HTTP gateway, an
-NVIDIA upstream client, Anthropic-style error conversion, timeouts, and cancellation
-handling. The model catalog, OS credential-store commands, and one-command Claude Code
-runner are implemented in the later phases described in [`plan.md`](plan.md).
+The current implementation includes the Phase 1 translators, the Phase 2 local gateway,
+and Phase 3 model discovery. It provides strict typed configuration, Anthropic/OpenAI
+request and response translation, incremental SSE translation, an authenticated loopback
+HTTP gateway, an NVIDIA upstream client, Anthropic-style error conversion, timeouts,
+cancellation handling, and a credential-free NVIDIA model catalog cache. The OS
+credential-store commands and one-command Claude Code runner are implemented in the later
+phases described in [`plan.md`](plan.md).
 
 ## Current CLI
 
@@ -30,8 +31,53 @@ The generated local bearer token and base URL are printed to standard error as a
 export-ready snippet. The token can instead be supplied through `--token-stdin` or a
 mode-`0600` file passed to `--token-file`.
 
-The `run`, `auth`, `models`, and `doctor` commands remain skeletons in this phase; they
-do not yet launch Claude Code or manage persistent credentials and model metadata.
+## NVIDIA model catalog
+
+Refresh the public NVIDIA model catalog without storing or sending an NVIDIA
+credential:
+
+```bash
+uv run claude-nim models update
+```
+
+The cache is written atomically to:
+
+```text
+~/.config/claude-nim/models.json
+```
+
+It contains model IDs and capability metadata, never credentials. The bundled curated
+metadata (`src/claude_nim_proxy/data/nvidia_models.json`) covers the hosted models that
+work well with Claude Code — the Nemotron 3 family, MiniMax M3.1 Flash, Kimi K2.6,
+DeepSeek V4.1 Flash, GLM-5.3, Step 5 Preview, GPT-OSS 20B, and a few other
+tool-calling chat models. Each entry records the context window, maximum output,
+reasoning support, image support, and tool-calling support published by NVIDIA's model
+cards and API reference. Values that NVIDIA does not publish are left unset and fall
+back to the global configuration; unlisted models remain selectable with conservative
+unknown capabilities. Per-model exceptions can be supplied in `config.toml`:
+
+```toml
+[model_overrides."nvidia/nemotron-3-super-120b-a12b"]
+display_name = "My NVIDIA model"
+context_window = 1048576
+max_output_tokens = 32768
+reasoning = true
+input = ["text"]
+tool_calling = true
+```
+
+List cached IDs, reversible Claude Code aliases, and resolved capabilities:
+
+```bash
+uv run claude-nim models list
+uv run claude-nim models list --json
+```
+
+When the cache matches the configured upstream, `serve` advertises its models through
+`GET /v1/models` using IDs such as
+`anthropic-nim/nvidia/nemotron-3-super-120b-a12b`. The `run`, `auth`, and `doctor`
+commands remain skeletons in this phase; they do not yet launch Claude Code or manage
+persistent credentials.
 
 ## Architecture
 
