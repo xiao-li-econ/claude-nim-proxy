@@ -1,8 +1,24 @@
 # claude-nim-proxy
 
-A planned thin local translator that lets Claude Code use NVIDIA NIM models through the Anthropic Messages API.
+A thin local translator that lets Claude Code use NVIDIA NIM models through the Anthropic Messages API.
 
-The project is currently in the planning/setup stage. See [`plan.md`](plan.md) for the architecture, protocol mappings, CLI design, credential handling, testing strategy, and implementation phases.
+Phase 1 is implemented on the `feature/phase-1-translators` branch. It provides the
+`claude-nim` command skeleton, strict typed configuration, pure Anthropic/OpenAI request
+and response translators, and an incremental SSE translation state machine. The networked
+gateway, model catalog, credential storage, and one-command runner are implemented in the
+later phases described in [`plan.md`](plan.md).
+
+## Current CLI
+
+The command tree is available for inspection:
+
+```bash
+uv run claude-nim --help
+uv run claude-nim run --help
+```
+
+The Phase 1 `run`, `serve`, `auth`, `models`, and `doctor` commands are skeletons and do
+not yet make network requests or launch Claude Code.
 
 ## Architecture
 
