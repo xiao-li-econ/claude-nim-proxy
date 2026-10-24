@@ -28,6 +28,18 @@ from claude_nim_proxy.models import (
     save_model_cache,
 )
 
+CURATED_AGENTIC_MODEL_IDS = (
+    "deepseek-ai/deepseek-v4.1-flash",
+    "minimaxai/minimax-m3.1-flash",
+    "moonshotai/kimi-k2.6",
+    "nvidia/nemotron-3-super-120b-a12b",
+    "nvidia/nemotron-3-ultra-550b-a55b",
+    "nvidia/nemotron-3.5-super-vl-120b-a12b",
+    "openai/gpt-oss-20b",
+    "stepfun-ai/step-5-preview",
+    "z-ai/glm-5.3",
+)
+
 
 def test_gateway_alias_is_reversible() -> None:
     alias = gateway_alias("nvidia/nemotron-3-super-120b-a12b")
@@ -69,7 +81,7 @@ def test_bundled_metadata_provides_curated_capabilities(tmp_path: Path) -> None:
     model = resolve_model_metadata("nvidia/nemotron-3-super-120b-a12b", config)
 
     assert model.display_name == "NVIDIA Nemotron 3 Super 120B A12B (NIM)"
-    assert model.context_window == 131_072
+    assert model.context_window == 1_048_576
     assert model.max_output_tokens == 32_768
     assert model.reasoning is True
     assert model.tool_calling is True
@@ -178,6 +190,38 @@ def test_bundled_metadata_file_is_valid() -> None:
 
     assert "nvidia/nemotron-3-super-120b-a12b" in bundled
     assert bundled["nvidia/nemotron-3-super-120b-a12b"].tool_calling is True
+
+
+def test_bundled_metadata_covers_curated_agentic_models() -> None:
+    bundled = load_bundled_model_metadata()
+
+    assert set(CURATED_AGENTIC_MODEL_IDS) <= set(bundled)
+    for model_id in CURATED_AGENTIC_MODEL_IDS:
+        metadata = bundled[model_id]
+        assert metadata.tool_calling is True
+        assert metadata.reasoning is True
+        assert metadata.context_window is not None
+        assert metadata.context_window >= 128_000
+
+
+def test_bundled_metadata_marks_image_capable_models() -> None:
+    bundled = load_bundled_model_metadata()
+
+    assert bundled["nvidia/nemotron-3.5-super-vl-120b-a12b"].input == ("text", "image")
+    assert bundled["moonshotai/kimi-k2.6"].input == ("text", "image")
+    assert bundled["nvidia/nemotron-3-super-120b-a12b"].input == ("text",)
+
+
+def test_unresolved_bundled_output_limit_falls_back_to_global_config(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("max_output_tokens = 6789\n", encoding="utf-8")
+    config = load_config(config_path, environ={})
+
+    model = resolve_model_metadata("z-ai/glm-5.3", config)
+
+    assert model.max_output_tokens == 6789
+    assert model.context_window == 1_048_576
+    assert model.metadata_source == "bundled"
 
 
 @pytest_asyncio.fixture

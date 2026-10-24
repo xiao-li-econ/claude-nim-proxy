@@ -542,10 +542,10 @@ Cache schema:
       "upstream_id": "nvidia/nemotron-3-super-120b-a12b",
       "gateway_id": "anthropic-nim/nvidia/nemotron-3-super-120b-a12b",
       "display_name": "NVIDIA Nemotron 3 Super 120B A12B (NIM)",
-      "context_window": 131072,
+      "context_window": 1048576,
       "max_output_tokens": 32768,
       "reasoning": true,
-      "input": ["text", "image"],
+      "input": ["text"],
       "tool_calling": true,
       "source": ["nvidia"],
       "metadata_source": "bundled"
@@ -555,6 +555,8 @@ Cache schema:
 ```
 
 The bundled file `src/claude_nim_proxy/data/nvidia_models.json` uses the same model-object shape and a top-level `version`/`models` structure, but does not contain `updated_at`, `upstream_base_url`, or user overrides. `gateway_id` is derived from `upstream_id` rather than duplicated in the bundled source data. The cache may store the derived value for convenient inspection.
+
+The curated overlay covers the hosted models that are practical with Claude Code: the Nemotron 3/3.5 family, MiniMax M3.1 Flash, Kimi K2.6, DeepSeek V4.1 Flash, GLM-5.3 and GLM-5.3 Flash, Step 5 Preview, GPT-OSS 20B, Poolside Laguna XS 2.1, Mixtral 8x22B, Mistral Large 2, and Llama 3.1 Nemotron Ultra. Capability values are taken from NVIDIA's model cards and NIM API reference; a value NVIDIA does not publish is left unset so that the global configuration fallback applies instead of a guessed value.
 
 `reasoning` and `tool_calling` are tri-state: `true`, `false`, or `null` for unknown. The `input` list contains supported modalities (`"text"` and optionally `"image"`). `metadata_source` is one of `bundled`, `user`, or `unknown`.
 

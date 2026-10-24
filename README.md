@@ -47,13 +47,19 @@ The cache is written atomically to:
 ```
 
 It contains model IDs and capability metadata, never credentials. The bundled curated
-metadata covers known NVIDIA models; unlisted models remain selectable with conservative
+metadata (`src/claude_nim_proxy/data/nvidia_models.json`) covers the hosted models that
+work well with Claude Code — the Nemotron 3 family, MiniMax M3.1 Flash, Kimi K2.6,
+DeepSeek V4.1 Flash, GLM-5.3, Step 5 Preview, GPT-OSS 20B, and a few other
+tool-calling chat models. Each entry records the context window, maximum output,
+reasoning support, image support, and tool-calling support published by NVIDIA's model
+cards and API reference. Values that NVIDIA does not publish are left unset and fall
+back to the global configuration; unlisted models remain selectable with conservative
 unknown capabilities. Per-model exceptions can be supplied in `config.toml`:
 
 ```toml
 [model_overrides."nvidia/nemotron-3-super-120b-a12b"]
 display_name = "My NVIDIA model"
-context_window = 131072
+context_window = 1048576
 max_output_tokens = 32768
 reasoning = true
 input = ["text"]
