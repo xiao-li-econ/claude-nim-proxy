@@ -1,11 +1,11 @@
 # Implementation Plan: Thin Claude Code ↔ NVIDIA NIM Proxy
 
-- **Status:** Phase 2 is complete on branch `feature/phase-2-local-gateway`; model catalog and discovery are next.
+- **Status:** Phase 3 implementation is in progress on branch `feature/phase-3-models-discovery`; Phase 2 is complete and merged into `main`.
 - **Research snapshot:** 2026-10-24
 - **Verified local versions:** Python 3.12.3, Claude Code 2.1.310, uv 0.9.2, Node.js 24.14.1
-- **Repository:** Git repository; Phase 1 was merged into `main`, and Phase 2 is implemented on `feature/phase-2-local-gateway` based on that merge.
+- **Repository:** Git repository; Phase 2 was merged into `main`, and Phase 3 is based on merged remote `main` at `acf3352`.
 - **Current implementation:** The CLI/configuration skeleton, pure Anthropic/OpenAI translators, SSE state machine, authenticated aiohttp gateway, NVIDIA upstream client, Anthropic error conversion, timeout handling, cancellation handling, and fake-upstream integration tests are implemented.
-- **Next action:** Implement Phase 3 using the tracker below; all section 19 decisions are confirmed.
+- **Next action:** Implement Phase 3 model catalog, cache, aliases, and discovery commands using the tracker below; all section 19 decisions are confirmed.
 
 ## Implementation tracker
 
@@ -16,11 +16,11 @@ This table is the durable handoff state between sessions. Update it whenever a p
 | Project scaffold | Complete | `uv sync --all-groups`, Ruff, mypy, and `uv build` passed; commit `da83fc5` | Package metadata, dependencies, lockfile, lint/type/test configuration, and minimal package created. |
 | Phase 1 — Scaffold completion and pure translators | Complete | 51 tests passed; Ruff, mypy, and `uv build` passed; commit `3122cc8` | Added the CLI skeleton, strict typed configuration, pure request/response translators, incremental SSE state machine, and focused unit tests. |
 | Phase 2 — Local gateway | Complete | 89 tests passed; Ruff, mypy, and `uv build` passed; commit `7d7c305` | Added the aiohttp server, local bearer authentication, NVIDIA upstream client, health/model endpoints, Anthropic error conversion, timeouts, cancellation handling, standalone `serve`, and fake-upstream integration tests. |
-| Phase 3 — Models and discovery | Not started | — | Implement catalog refresh, bundled metadata, cache management, aliases, and model commands. |
+| Phase 3 — Models and discovery | In progress | Branch `feature/phase-3-models-discovery`; validation pending | Implement catalog refresh, bundled metadata, cache management, aliases, and model commands. |
 | Phase 4 — Credentials and one-command runner | Not started | — | Implement auth commands, credential resolution, Claude Code launch, signal handling, and cleanup. |
 | Phase 5 — Compatibility hardening and documentation | Not started | — | Complete live compatibility work, redacted tracing, README, and documented smoke tests. |
 
-**Current next action:** Start Phase 3 on `feature/phase-2-local-gateway`. All implementation decisions in section 19 are confirmed and binding.
+**Current next action:** Complete Phase 3 on `feature/phase-3-models-discovery`. All implementation decisions in section 19 are confirmed and binding.
 
 ## 1. Goal
 
