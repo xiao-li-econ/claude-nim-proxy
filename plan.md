@@ -1,11 +1,11 @@
 # Implementation Plan: Thin Claude Code ↔ NVIDIA NIM Proxy
 
-- **Status:** Phase 3 is complete on branch `feature/phase-3-models-discovery`; credentials and the one-command runner are next.
+- **Status:** Phase 3 is merged into `main` through PR #3; credentials and the one-command runner are next.
 - **Research snapshot:** 2026-10-24
 - **Verified local versions:** Python 3.12.3, Claude Code 2.1.310, uv 0.9.2, Node.js 24.14.1
-- **Repository:** Git repository; Phase 3 is based on merged Phase 2 remote `main` at `acf3352` and implements the model catalog in commit `61723cf`.
+- **Repository:** Git repository; Phase 3 was merged into remote `main` as `bb97dc7` from branch `feature/phase-3-models-discovery` (implementation commits `61723cf`, `33dab7a`).
 - **Current implementation:** The CLI/configuration skeleton, pure Anthropic/OpenAI translators, SSE state machine, authenticated aiohttp gateway, NVIDIA upstream client, Anthropic error conversion, timeout handling, cancellation handling, NVIDIA catalog parsing, bundled capability metadata, an atomic credential-free model cache, model commands, and fake-upstream integration tests are implemented.
-- **Next action:** Merge Phase 3, then implement Phase 4 credential management and the one-command runner using the tracker below; all section 19 decisions are confirmed.
+- **Next action:** Implement Phase 4 credential management and the one-command runner from the updated remote `main`; all section 19 decisions are confirmed.
 
 ## Implementation tracker
 
@@ -20,7 +20,7 @@ This table is the durable handoff state between sessions. Update it whenever a p
 | Phase 4 — Credentials and one-command runner | Not started | — | Implement auth commands, credential resolution, Claude Code launch, signal handling, and cleanup. |
 | Phase 5 — Compatibility hardening and documentation | Not started | — | Complete live compatibility work, redacted tracing, README, and documented smoke tests. |
 
-**Current next action:** Merge Phase 3, then start Phase 4 from the updated remote `main`. All implementation decisions in section 19 are confirmed and binding.
+**Current next action:** Start Phase 4 from the updated remote `main` (`bb97dc7`). All implementation decisions in section 19 are confirmed and binding.
 
 ## 1. Goal
 
