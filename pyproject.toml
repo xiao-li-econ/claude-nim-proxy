@@ -1,0 +1,45 @@
+[project]
+name = "claude-nim-proxy"
+version = "0.1.0"
+description = "Thin Claude Code to NVIDIA NIM translator"
+readme = "README.md"
+authors = [
+    { name = "xiao", email = "xiao.li.econ@gmail.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp>=3.10",
+    "keyring>=25",
+]
+
+[project.scripts]
+claude-nim = "claude_nim_proxy.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.0",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.17.2",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+mypy_path = "src"
+files = ["src"]
