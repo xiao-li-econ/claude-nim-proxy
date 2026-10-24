@@ -1,18 +1,24 @@
 """Command-line entry point for claude-nim.
 
-Phase 1 provides the command and configuration skeleton. Networked commands intentionally
-return a clear not-implemented status until their corresponding implementation phase.
+The standalone gateway is implemented in Phase 2. Commands that depend on later model,
+credential, or runner phases return a clear not-implemented status.
 """
 
 from __future__ import annotations
 
 import argparse
+import asyncio
+import os
+import secrets
+import signal
+import stat
 import sys
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from .config import AppConfig, ConfigError, UpstreamAuth, load_config
+from .server import GatewayServer, GatewaySettings
 
 _PROGRAM_NAME = "claude-nim"
 
@@ -37,6 +43,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--token-stdin", action="store_true", help="read the local token from stdin"
     )
     token_source.add_argument("--token-file", type=Path, help="read the local token from a file")
+    serve.add_argument(
+        "--allow-insecure-token-file",
+        action="store_true",
+        help="allow a group- or world-accessible token file",
+    )
     _add_common_options(serve)
 
     auth = commands.add_parser("auth", help="manage the NVIDIA API credential")
@@ -76,7 +87,13 @@ def main(argv: list[str] | None = None) -> int:
     if namespace.command == "run":
         return _run_skeleton(config, namespace.project_dir, passthrough)
     if namespace.command == "serve":
-        return _serve_skeleton(config)
+        return _serve_gateway(
+            config,
+            token_stdin=namespace.token_stdin,
+            token_file=namespace.token_file,
+            allow_insecure_token_file=namespace.allow_insecure_token_file,
+            allow_non_loopback=namespace.allow_non_loopback,
+        )
     if namespace.command == "auth":
         return _auth_skeleton(namespace.auth_command)
     if namespace.command == "models":
@@ -169,19 +186,146 @@ def _resolved_config(namespace: argparse.Namespace) -> AppConfig:
 def _run_skeleton(config: AppConfig, project_dir: str, passthrough: list[str]) -> int:
     del config, project_dir, passthrough
     print(
-        "claude-nim run is not available yet; Phase 1 provides the CLI skeleton only.",
+        "claude-nim run is not available yet; the one-command runner is planned for Phase 4.",
         file=sys.stderr,
     )
     return 1
 
 
-def _serve_skeleton(config: AppConfig) -> int:
-    del config
-    print(
-        "claude-nim serve is not available yet; Phase 1 provides the CLI skeleton only.",
-        file=sys.stderr,
+def _serve_gateway(
+    config: AppConfig,
+    *,
+    token_stdin: bool,
+    token_file: Path | None,
+    allow_insecure_token_file: bool,
+    allow_non_loopback: bool,
+) -> int:
+    if not config.default_model:
+        print(
+            "No NVIDIA model is selected. Use --model, set NVIDIA_MODEL, "
+            "or set default_model in config.toml.",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        token, generated = _resolve_local_token(
+            token_stdin=token_stdin,
+            token_file=token_file,
+            allow_insecure_token_file=allow_insecure_token_file,
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    api_key = (
+        None if config.upstream_auth is UpstreamAuth.NONE else os.environ.get("NVIDIA_API_KEY")
     )
-    return 1
+    if config.upstream_auth is not UpstreamAuth.NONE and not api_key:
+        print(
+            "No NVIDIA API credential is configured. Set NVIDIA_API_KEY; "
+            "OS credential-store support will be added with the auth commands.",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        settings = GatewaySettings(
+            local_token=token,
+            default_model=config.default_model,
+            upstream_base_url=config.upstream_base_url,
+            api_key=api_key,
+            upstream_auth=config.upstream_auth,
+            listen_host=config.listen_host,
+            listen_port=config.listen_port,
+            upstream_connect_timeout_seconds=config.upstream_connect_timeout_seconds,
+            upstream_read_timeout_seconds=config.upstream_read_timeout_seconds,
+            allow_non_loopback=allow_non_loopback,
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if settings.binds_non_loopback:
+        print(
+            "WARNING: the proxy is listening on a non-loopback address. "
+            "Local bearer authentication remains enabled.",
+            file=sys.stderr,
+        )
+    try:
+        return asyncio.run(_serve_until_stopped(settings, token, generated))
+    except KeyboardInterrupt:
+        return 0
+
+
+async def _serve_until_stopped(
+    settings: GatewaySettings,
+    token: str,
+    generated: bool,
+) -> int:
+    server = GatewayServer(settings)
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    installed_signals: list[signal.Signals] = []
+    for signal_number in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(signal_number, stop_event.set)
+        except (NotImplementedError, RuntimeError):
+            continue
+        installed_signals.append(signal_number)
+
+    try:
+        base_url = await server.start()
+        if generated:
+            print(
+                f"export ANTHROPIC_BASE_URL='{base_url}'\nexport ANTHROPIC_AUTH_TOKEN='{token}'",
+                file=sys.stderr,
+            )
+        else:
+            print(f"claude-nim proxy listening at {base_url}", file=sys.stderr)
+        await stop_event.wait()
+    finally:
+        for signal_number in installed_signals:
+            loop.remove_signal_handler(signal_number)
+        await server.stop()
+    return 0
+
+
+def _resolve_local_token(
+    *,
+    token_stdin: bool,
+    token_file: Path | None,
+    allow_insecure_token_file: bool,
+) -> tuple[str, bool]:
+    if token_stdin:
+        token = sys.stdin.readline().rstrip("\r\n")
+        if not token:
+            raise ValueError("No local bearer token was provided on stdin.")
+        return token, False
+
+    if token_file is not None:
+        try:
+            mode = stat.S_IMODE(token_file.stat().st_mode)
+        except OSError as exc:
+            raise ValueError(f"Cannot read token file {token_file}: {exc.strerror}") from exc
+        if mode & 0o077:
+            if not allow_insecure_token_file:
+                raise ValueError(
+                    f"Token file {token_file} is group/world accessible. "
+                    "Use chmod 600 or pass --allow-insecure-token-file."
+                )
+            print(
+                f"WARNING: token file {token_file} is group/world accessible.",
+                file=sys.stderr,
+            )
+        try:
+            token = token_file.read_text(encoding="utf-8").rstrip("\r\n")
+        except OSError as exc:
+            raise ValueError(f"Cannot read token file {token_file}: {exc.strerror}") from exc
+        if not token:
+            raise ValueError(f"Token file {token_file} is empty.")
+        return token, False
+
+    return secrets.token_urlsafe(32), True
 
 
 def _auth_skeleton(command: str) -> int:

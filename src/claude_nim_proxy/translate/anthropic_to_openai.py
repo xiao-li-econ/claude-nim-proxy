@@ -175,9 +175,7 @@ def _translate_message(message: dict[str, Any], supports_images: bool) -> list[d
     return _translate_user_blocks(content, supports_images)
 
 
-def _translate_assistant_blocks(
-    blocks: list[Any], supports_images: bool
-) -> list[dict[str, Any]]:
+def _translate_assistant_blocks(blocks: list[Any], supports_images: bool) -> list[dict[str, Any]]:
     text_parts: list[str] = []
     tool_calls: list[dict[str, Any]] = []
     for block in blocks:

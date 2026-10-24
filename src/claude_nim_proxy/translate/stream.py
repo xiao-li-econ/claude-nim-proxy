@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import uuid
 from collections.abc import AsyncIterable, AsyncIterator
@@ -181,11 +182,13 @@ class OpenAIStreamTranslator:
                 self.output_tokens = completion_tokens
 
         choices = payload.get("choices")
-        if not isinstance(choices, list):
+        if choices is None and "usage" in payload:
             return messages
+        if not isinstance(choices, list):
+            return self.fail()
         for choice in choices:
             if not isinstance(choice, dict):
-                continue
+                return self.fail()
             finish_reason = choice.get("finish_reason")
             if finish_reason is not None:
                 self.stop_reason = map_stop_reason(finish_reason)
@@ -425,6 +428,10 @@ async def translate_stream(
                 chunk = pending.result()
             except StopAsyncIteration:
                 break
+            except Exception:
+                for message in translator.fail():
+                    yield message
+                break
             finally:
                 pending = None
 
@@ -448,3 +455,5 @@ async def translate_stream(
     finally:
         if pending is not None and not pending.done():
             pending.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await pending

@@ -68,7 +68,7 @@ async def test_stream_state_machine_handles_fragmented_frames_and_comments() -> 
 
 async def test_multi_line_data_is_joined_before_json_parsing() -> None:
     parser = SSEParser()
-    frames = parser.feed(b"event: message\ndata: {\ndata:   \"choices\": []\ndata: }\n\n")
+    frames = parser.feed(b'event: message\ndata: {\ndata:   "choices": []\ndata: }\n\n')
     assert len(frames) == 1
     assert frames[0].event == "message"
     assert json.loads(frames[0].data) == {"choices": []}
@@ -188,7 +188,7 @@ async def test_text_and_parallel_tool_blocks_have_contiguous_indices() -> None:
 async def test_fatal_error_closes_open_block_and_is_terminal() -> None:
     messages = await _collect(
         _event({"choices": [{"delta": {"content": "partial"}}]}),
-        b"event: error\ndata: {\"error\":{\"message\":\"secret upstream detail\"}}\n\n",
+        b'event: error\ndata: {"error":{"message":"secret upstream detail"}}\n\n',
     )
 
     assert [message.event for message in messages] == [
@@ -222,9 +222,27 @@ async def test_usage_only_chunk_updates_final_cumulative_output_tokens() -> None
     assert message_delta.data["usage"] == {"output_tokens": 7}
 
 
+async def test_valid_json_with_invalid_stream_shape_is_a_fatal_error() -> None:
+    messages = await _collect(_event({"unexpected": True}))
+
+    assert messages[-1].event == "error"
+    assert messages[-1].data["error"]["type"] == "api_error"
+    assert "message_stop" not in [message.event for message in messages]
+
+
+async def test_usage_only_chunk_without_choices_is_accepted() -> None:
+    messages = await _collect(
+        _event({"usage": {"prompt_tokens": 2, "completion_tokens": 1}}),
+        b"data: [DONE]\n\n",
+    )
+
+    assert messages[-1].event == "message_stop"
+    assert messages[-2].data["usage"] == {"output_tokens": 1}
+
+
 async def test_unknown_upstream_event_is_ignored() -> None:
     messages = await _collect(
-        b"event: unknown.event\ndata: {\"choices\":[{\"delta\":{\"content\":\"hidden\"}}]}\n\n",
+        b'event: unknown.event\ndata: {"choices":[{"delta":{"content":"hidden"}}]}\n\n',
         _event({"choices": [{"delta": {"content": "visible"}}]}),
         b"data: [DONE]\n\n",
     )
