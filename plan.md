@@ -1,11 +1,11 @@
 # Implementation Plan: Thin Claude Code ↔ NVIDIA NIM Proxy
 
-- **Status:** Phase 3 is merged into `main` through PR #3; credentials and the one-command runner are next.
+- **Status:** Phase 4 is complete on `feature/phase-4-runner`; compatibility hardening and final documentation are next.
 - **Research snapshot:** 2026-10-24
 - **Verified local versions:** Python 3.12.3, Claude Code 2.1.310, uv 0.9.2, Node.js 24.14.1
-- **Repository:** Git repository; Phase 3 was merged into remote `main` as `bb97dc7` from branch `feature/phase-3-models-discovery` (implementation commits `61723cf`, `33dab7a`).
-- **Current implementation:** The CLI/configuration skeleton, pure Anthropic/OpenAI translators, SSE state machine, authenticated aiohttp gateway, NVIDIA upstream client, Anthropic error conversion, timeout handling, cancellation handling, NVIDIA catalog parsing, bundled capability metadata, an atomic credential-free model cache, model commands, and fake-upstream integration tests are implemented.
-- **Next action:** Implement Phase 4 credential management and the one-command runner from the updated remote `main`; all section 19 decisions are confirmed.
+- **Repository:** Git repository; Phase 4 is implemented on branch `feature/phase-4-runner` in commit `361e816` (Phase 3 remains merged into remote `main` as `bb97dc7`).
+- **Current implementation:** The CLI/configuration skeleton, pure Anthropic/OpenAI translators, SSE state machine, authenticated aiohttp gateway, NVIDIA upstream client, Anthropic error conversion, timeout handling, cancellation handling, NVIDIA catalog parsing, bundled capability metadata, an atomic credential-free model cache, model commands, OS credential-store integration, the warned mode-0600 fallback, auth commands, the one-command Claude Code runner, doctor diagnostics, and fake-upstream integration tests are implemented.
+- **Next action:** Merge Phase 4, then implement Phase 5 compatibility hardening, redacted tracing, and final documentation/smoke-test guidance; all section 19 decisions are confirmed.
 
 ## Implementation tracker
 
@@ -17,10 +17,10 @@ This table is the durable handoff state between sessions. Update it whenever a p
 | Phase 1 — Scaffold completion and pure translators | Complete | 51 tests passed; Ruff, mypy, and `uv build` passed; commit `3122cc8` | Added the CLI skeleton, strict typed configuration, pure request/response translators, incremental SSE state machine, and focused unit tests. |
 | Phase 2 — Local gateway | Complete | 89 tests passed; Ruff, mypy, and `uv build` passed; commit `7d7c305` | Added the aiohttp server, local bearer authentication, NVIDIA upstream client, health/model endpoints, Anthropic error conversion, timeouts, cancellation handling, standalone `serve`, and fake-upstream integration tests. |
 | Phase 3 — Models and discovery | Complete | 117 tests passed; Ruff, mypy, and `uv build` passed; commits `61723cf`, `33dab7a` | Added public NVIDIA catalog refresh, bundled capability metadata, capability precedence, atomic credential-free cache storage, reversible aliases, model list/update commands, cached gateway discovery, and model-specific image capability checks. The curated overlay was expanded to 19 hosted agentic/tool-calling models with NVIDIA-published context, output, reasoning, image, and tool-calling values. |
-| Phase 4 — Credentials and one-command runner | In progress | Branch `feature/phase-4-runner` | Implementing auth commands, credential resolution, Claude Code launch, signal handling, and cleanup. |
+| Phase 4 — Credentials and one-command runner | Complete | 133 tests passed; Ruff, mypy, and `uv build` passed; commit `361e816` | Added `auth login/status/verify/logout`, environment/keyring/file-fallback credential resolution, secure prompts, a one-command Claude Code launcher, isolated mode-0600 settings, signal forwarding and cleanup, and doctor diagnostics. |
 | Phase 5 — Compatibility hardening and documentation | Not started | — | Complete live compatibility work, redacted tracing, README, and documented smoke tests. |
 
-**Current next action:** Start Phase 4 from the updated remote `main` (`bb97dc7`). All implementation decisions in section 19 are confirmed and binding.
+**Current next action:** Merge Phase 4 from `feature/phase-4-runner` (`361e816`), then start Phase 5 compatibility hardening and documentation. All implementation decisions in section 19 are confirmed and binding.
 
 ## 1. Goal
 
