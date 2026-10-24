@@ -15,8 +15,10 @@ class FakeNvidiaUpstream:
         self.runner: web.AppRunner | None = None
         self.port: int | None = None
         self.requests: list[dict[str, Any]] = []
+        self.catalog_requests: list[dict[str, Any]] = []
         self.handler: Callable[[web.Request], Awaitable[web.StreamResponse]] = self._default_handler
         self.app.router.add_post("/v1/chat/completions", self._handle)
+        self.app.router.add_get("/v1/models", self._handle_catalog)
 
     async def start(self) -> None:
         self.runner = web.AppRunner(self.app, access_log=None)
@@ -49,6 +51,17 @@ class FakeNvidiaUpstream:
             }
         )
         return await self.handler(request)
+
+    async def _handle_catalog(self, request: web.Request) -> web.StreamResponse:
+        self.catalog_requests.append({"method": request.method, "path": request.path})
+        return web.json_response(
+            {
+                "object": "list",
+                "data": [
+                    {"id": "nvidia/model", "object": "model"},
+                ],
+            }
+        )
 
     async def _default_handler(self, request: web.Request) -> web.StreamResponse:
         del request
