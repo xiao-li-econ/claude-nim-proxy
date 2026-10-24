@@ -1,11 +1,11 @@
 # Implementation Plan: Thin Claude Code ↔ NVIDIA NIM Proxy
 
-- **Status:** Core implementation has not started; the uv project scaffold is complete.
+- **Status:** Phase 1 implementation is in progress on branch `feature/phase-1-translators`; the uv project scaffold is complete.
 - **Research snapshot:** 2026-10-24
 - **Verified local versions:** Python 3.12.3, Claude Code 2.1.310, uv 0.9.2, Node.js 24.14.1
 - **Repository:** Git repository on branch `main`; initial scaffold committed as `da83fc5` (`Initialize project with uv`).
 - **Current implementation:** `pyproject.toml`, `uv.lock`, `README.md`, `.gitignore`, and the minimal `src/claude_nim_proxy/` package exist; no translator, gateway, CLI, runner, or tests have been implemented yet.
-- **Next action:** Implement Phase 1 using the tracker below; all section 19 decisions are confirmed.
+- **Next action:** Complete Phase 1 using the tracker below; all section 19 decisions are confirmed.
 
 ## Implementation tracker
 
@@ -14,13 +14,13 @@ This table is the durable handoff state between sessions. Update it whenever a p
 | Phase | Status | Validation / commit | Notes |
 |---|---|---|---|
 | Project scaffold | Complete | `uv sync --all-groups`, Ruff, mypy, and `uv build` passed; commit `da83fc5` | Package metadata, dependencies, lockfile, lint/type/test configuration, and minimal package created. |
-| Phase 1 — Scaffold completion and pure translators | Not started | — | Implement the CLI skeleton, request/response translators, SSE state machine, and focused unit tests. |
+| Phase 1 — Scaffold completion and pure translators | In progress | Branch `feature/phase-1-translators`; validation pending | Implement the CLI skeleton, request/response translators, SSE state machine, and focused unit tests. |
 | Phase 2 — Local gateway | Not started | — | Implement the aiohttp server, upstream client, local authentication, errors, cancellation, and fake-upstream integration tests. |
 | Phase 3 — Models and discovery | Not started | — | Implement catalog refresh, bundled metadata, cache management, aliases, and model commands. |
 | Phase 4 — Credentials and one-command runner | Not started | — | Implement auth commands, credential resolution, Claude Code launch, signal handling, and cleanup. |
 | Phase 5 — Compatibility hardening and documentation | Not started | — | Complete live compatibility work, redacted tracing, README, and documented smoke tests. |
 
-**Current next action:** Start Phase 1. All implementation decisions in section 19 are confirmed and binding.
+**Current next action:** Complete Phase 1 on `feature/phase-1-translators`. All implementation decisions in section 19 are confirmed and binding.
 
 ## 1. Goal
 
