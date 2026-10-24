@@ -7,7 +7,7 @@ import contextlib
 import ipaddress
 import json
 import secrets
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -51,6 +51,11 @@ class GatewaySettings:
     stream_ping_interval_seconds: float = 1.0
     supports_images: bool = True
     model_ids: tuple[str, ...] = ()
+    model_display_names: Mapping[str, str] = field(default_factory=dict)
+    model_image_support: Mapping[str, bool] = field(default_factory=dict)
+    known_model_ids: tuple[str, ...] = ()
+    context_window: int = 32_768
+    max_output_tokens: int = 4_096
     allow_non_loopback: bool = False
     resolved_default_model: str = field(init=False, repr=False)
 
@@ -84,6 +89,15 @@ class GatewaySettings:
                 models.append(raw_id)
         return tuple(models)
 
+    def supports_images_for(self, upstream_model_id: str) -> bool:
+        """Return image support for one resolved upstream model ID."""
+
+        if upstream_model_id in self.model_image_support:
+            return self.model_image_support[upstream_model_id]
+        if self.known_model_ids and upstream_model_id not in self.known_model_ids:
+            return False
+        return self.supports_images
+
 
 class Gateway:
     """Implement the Anthropic-facing HTTP routes."""
@@ -114,12 +128,26 @@ class Gateway:
         except AnthropicError as exc:
             return self._error_response(exc)
 
+        supports_images = self.settings.supports_images
+        requested_model = request_body.get("model")
+        if isinstance(requested_model, str):
+            try:
+                resolved_model = resolve_upstream_model(
+                    requested_model,
+                    self.settings.resolved_default_model,
+                )
+            except RequestTranslationError:
+                return self._error_response(
+                    AnthropicError(400, "invalid_request_error", "The request was invalid.")
+                )
+            supports_images = self.settings.supports_images_for(resolved_model)
+
         try:
             translated = translate_request(
                 request_body,
                 RequestTranslationOptions(
                     default_model=self.settings.resolved_default_model,
-                    supports_images=self.settings.supports_images,
+                    supports_images=supports_images,
                 ),
             )
         except UnsupportedImageError:
@@ -154,7 +182,10 @@ class Gateway:
         data = [
             {
                 "id": f"{GATEWAY_MODEL_PREFIX}{model_id}",
-                "display_name": f"NVIDIA {model_id} (NIM)",
+                "display_name": self.settings.model_display_names.get(
+                    model_id,
+                    f"NVIDIA {model_id} (NIM)",
+                ),
                 "description": "NVIDIA NIM model",
             }
             for model_id in self.settings.raw_model_ids

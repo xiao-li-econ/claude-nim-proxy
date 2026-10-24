@@ -47,12 +47,9 @@ def test_cli_rejects_missing_model_only_when_run_is_implemented(capsys) -> None:
     assert build_parser().parse_args(["run", "."]).command == "run"
 
 
-def test_auth_and_models_commands_are_skeletons(capsys) -> None:
+def test_auth_commands_remain_skeletons(capsys) -> None:
     assert main(["auth", "status"]) == 1
     assert "Phase 4" in capsys.readouterr().err
-
-    assert main(["models", "list"]) == 1
-    assert "Phase 3" in capsys.readouterr().err
 
 
 def test_generated_local_token_is_random_urlsafe_text() -> None:

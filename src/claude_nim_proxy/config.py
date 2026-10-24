@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 DEFAULT_UPSTREAM_BASE_URL = "https://integrate.api.nvidia.com/v1"
 DEFAULT_LISTEN_HOST = "127.0.0.1"
@@ -65,6 +66,9 @@ class AppConfig:
     upstream_read_timeout_seconds: float = DEFAULT_UPSTREAM_READ_TIMEOUT_SECONDS
     debug: bool = False
     model_overrides: Mapping[str, ModelOverride] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        _validate_upstream_base_url(self.upstream_base_url)
 
 
 _TOP_LEVEL_KEYS = {
@@ -174,6 +178,20 @@ def load_config(
         debug=_boolean(values, "debug"),
         model_overrides=_parse_model_overrides(values["model_overrides"]),
     )
+
+
+def _validate_upstream_base_url(value: str) -> None:
+    try:
+        parsed = urlsplit(value)
+        _ = parsed.port
+    except ValueError as exc:
+        raise ConfigError("upstream_base_url must be a valid HTTP(S) URL") from exc
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ConfigError("upstream_base_url must be a valid HTTP(S) URL")
+    if parsed.username is not None or parsed.password is not None:
+        raise ConfigError("upstream_base_url must not contain credentials")
+    if parsed.query or parsed.fragment:
+        raise ConfigError("upstream_base_url must not contain a query or fragment")
 
 
 def _read_config_file(path: Path) -> dict[str, Any]:

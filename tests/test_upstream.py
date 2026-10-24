@@ -5,7 +5,7 @@ import pytest
 
 from claude_nim_proxy.config import UpstreamAuth
 from claude_nim_proxy.translate.errors import AnthropicError
-from claude_nim_proxy.upstream import NvidiaUpstreamClient
+from claude_nim_proxy.upstream import NvidiaCatalogClient, NvidiaUpstreamClient
 
 
 @pytest.mark.parametrize(
@@ -37,6 +37,34 @@ async def test_chat_completions_endpoint_is_normalized(base_url: str, expected: 
             read_timeout_seconds=1,
         )
         assert client.chat_completions_url == expected
+
+
+@pytest.mark.parametrize(
+    ("base_url", "expected"),
+    [
+        (
+            "https://integrate.api.nvidia.com/v1",
+            "https://integrate.api.nvidia.com/v1/models",
+        ),
+        (
+            "https://example.test",
+            "https://example.test/v1/models",
+        ),
+        (
+            "https://example.test/v1/models",
+            "https://example.test/v1/models",
+        ),
+    ],
+)
+async def test_models_endpoint_is_normalized(base_url: str, expected: str) -> None:
+    async with aiohttp.ClientSession() as session:
+        client = NvidiaCatalogClient(
+            session,
+            base_url=base_url,
+            connect_timeout_seconds=1,
+            read_timeout_seconds=1,
+        )
+        assert client.models_url == expected
 
 
 async def test_missing_required_credential_fails_before_network_io() -> None:
