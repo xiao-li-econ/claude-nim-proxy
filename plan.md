@@ -1,9 +1,26 @@
 # Implementation Plan: Thin Claude Code ↔ NVIDIA NIM Proxy
 
-**Status:** Planning only — no implementation has been started.  
-**Research snapshot:** 2026-10-24  
-**Verified local versions:** Python 3.12.3, Claude Code 2.1.310  
-**Workspace:** Greenfield directory; it currently contains only this plan and is not a Git repository.
+- **Status:** Core implementation has not started; the uv project scaffold is complete.
+- **Research snapshot:** 2026-10-24
+- **Verified local versions:** Python 3.12.3, Claude Code 2.1.310, uv 0.9.2, Node.js 24.14.1
+- **Repository:** Git repository on branch `main`; initial scaffold committed as `da83fc5` (`Initialize project with uv`).
+- **Current implementation:** `pyproject.toml`, `uv.lock`, `README.md`, `.gitignore`, and the minimal `src/claude_nim_proxy/` package exist; no translator, gateway, CLI, runner, or tests have been implemented yet.
+- **Next action:** Implement Phase 1 using the tracker below; all section 19 decisions are confirmed.
+
+## Implementation tracker
+
+This table is the durable handoff state between sessions. Update it whenever a phase starts, completes, becomes blocked, changes scope, or gains new validation evidence. Record the validation commands and Git commit for completed phases.
+
+| Phase | Status | Validation / commit | Notes |
+|---|---|---|---|
+| Project scaffold | Complete | `uv sync --all-groups`, Ruff, mypy, and `uv build` passed; commit `da83fc5` | Package metadata, dependencies, lockfile, lint/type/test configuration, and minimal package created. |
+| Phase 1 — Scaffold completion and pure translators | Not started | — | Implement the CLI skeleton, request/response translators, SSE state machine, and focused unit tests. |
+| Phase 2 — Local gateway | Not started | — | Implement the aiohttp server, upstream client, local authentication, errors, cancellation, and fake-upstream integration tests. |
+| Phase 3 — Models and discovery | Not started | — | Implement catalog refresh, bundled metadata, cache management, aliases, and model commands. |
+| Phase 4 — Credentials and one-command runner | Not started | — | Implement auth commands, credential resolution, Claude Code launch, signal handling, and cleanup. |
+| Phase 5 — Compatibility hardening and documentation | Not started | — | Complete live compatibility work, redacted tracing, README, and documented smoke tests. |
+
+**Current next action:** Start Phase 1. All implementation decisions in section 19 are confirmed and binding.
 
 ## 1. Goal
 
@@ -15,7 +32,7 @@ Build a small Python CLI that:
 4. Provides NVIDIA model refresh commands and secure CLI-managed credential storage.
 5. Avoids LiteLLM and general-purpose provider/router abstractions.
 
-Proposed distribution name: package `claude-nim-proxy`, executable `claude-nim`.
+Distribution name: package `claude-nim-proxy`, executable `claude-nim`.
 
 ## 2. Important research findings
 
@@ -49,7 +66,7 @@ Claude Code's discovery endpoint accepts a response shaped like:
 }
 ```
 
-Claude Code currently keeps only discovered IDs containing `claude` or `anthropic`, case-insensitively. Raw NVIDIA IDs such as `nvidia/nemotron-3-super-120b-a12b` are ignored by the picker. The proxy therefore needs a reversible gateway alias, proposed as:
+Claude Code currently keeps only discovered IDs containing `claude` or `anthropic`, case-insensitively. Raw NVIDIA IDs such as `nvidia/nemotron-3-super-120b-a12b` are ignored by the picker. The proxy therefore uses this reversible gateway alias:
 
 ```text
 anthropic-nim/<actual NVIDIA model ID>
@@ -63,10 +80,9 @@ The translator strips `anthropic-nim/` before calling NVIDIA. Explicit raw NVIDI
 - Hosted authentication: `Authorization: Bearer $NVIDIA_API_KEY`.
 - Hosted inference: `POST /v1/chat/completions`.
 - Model catalog: `GET /v1/models`, returning OpenAI-style `{ "object": "list", "data": [...] }`.
-- A self-hosted NIM commonly uses `http://127.0.0.1:8000/v1` and the same Chat Completions contract.
-- Tool calling is model- and backend-dependent. Local vLLM/SGLang NIM deployments may need the correct tool-call parser enabled. Claude Code is not useful without reliable tool calling.
+- Tool calling is model- and backend-dependent. Claude Code is not useful without reliable tool calling.
 - The hosted NVIDIA endpoint was checked during planning and exposes Chat Completions but returns 404 for `/v1/messages`, so a translator is needed for that target.
-- Recent local NIM releases also expose a native Anthropic-compatible `/v1/messages` endpoint, and NVIDIA documents using Claude Code directly with them. That is a useful bypass/future mode, but the primary target of this project remains hosted NIM and NIM deployments that expose the OpenAI-compatible API.
+- This project targets hosted NVIDIA NIM only. Self-hosted/local NIM deployment and the native Anthropic-compatible endpoint found in some local NIM releases are explicitly out of scope.
 
 ### Model catalog and credential ownership
 
@@ -86,7 +102,7 @@ The CLI will own the complete NVIDIA credential lifecycle: secure prompt, valida
 - Claude-compatible model discovery.
 - One-command proxy plus Claude Code launcher.
 - NVIDIA model cache/refresh commands and secure CLI-managed credential storage.
-- Local NIM as well as hosted NIM via a configurable base URL.
+- Hosted NVIDIA NIM as the production upstream. The base URL remains configurable for automated fake-upstream tests, but alternate providers and local model deployment are not product goals.
 - Clear diagnostics for missing Claude Code, missing credentials, unsupported models, and failed upstream calls.
 
 ### Explicit non-goals for the MVP
@@ -99,7 +115,7 @@ The CLI will own the complete NVIDIA credential lifecycle: secure prompt, valida
 - Reimplementing Claude Code's system prompt or otherwise making a non-Claude model behave exactly like Claude.
 - Translating every future Anthropic beta feature. Unknown fields will be ignored safely and recorded in debug mode.
 
-## 4. Proposed CLI
+## 4. CLI
 
 ```text
 claude-nim run [PROJECT_DIR] [OPTIONS] [-- CLAUDE_ARGS...]
@@ -154,18 +170,23 @@ claude-nim run . --model nvidia/nemotron-3-super-120b-a12b -- --resume
 2. Resolve the upstream model in this order:
    - `--model`;
    - `NVIDIA_MODEL` environment variable;
-   - user config `default_model`;
-   - a configured/cached tool-capable model, if unambiguous.
-3. Resolve the NVIDIA credential:
-   - `NVIDIA_API_KEY` from the environment, taking precedence so CI and ephemeral use remain possible;
-   - otherwise the OS credential store;
-   - otherwise, in an interactive terminal, securely prompt with `getpass`, store it, and continue;
-   - otherwise fail with a concise instruction to run `claude-nim auth login`.
-4. Resolve the upstream base URL:
+   - user config `default_model`.
+
+   The proxy must not guess a model from the cached catalog. If none of these sources resolves a model, stop with a concise error listing cached tool-capable candidates and explain how to select one with `--model`, `NVIDIA_MODEL`, or `default_model`.
+3. Resolve the upstream base URL:
    - `--upstream-base-url`;
    - `NVIDIA_BASE_URL` environment variable;
    - user config;
    - default `https://integrate.api.nvidia.com/v1`.
+
+   Normalize the URL by removing trailing slashes and append `chat/completions` or `models` to the configured OpenAI-compatible base URL without duplicating `/v1`.
+4. Resolve the upstream authentication mode (`auto`, `required`, or `none`) and, when authentication is required, resolve the NVIDIA credential:
+   - `NVIDIA_API_KEY` from the environment, taking precedence so CI and ephemeral use remain possible;
+   - otherwise the OS credential store;
+   - otherwise, in an interactive terminal, securely prompt with `getpass`, store it, and continue;
+   - otherwise fail with a concise instruction to run `claude-nim auth login`.
+
+   In `auto` mode, a normal production upstream requires a credential. In `none` mode, no credential is resolved or sent upstream; this is intended for automated fake-upstream tests. In `required` mode, a missing credential is always an error.
 5. Start the HTTP server on `127.0.0.1`, using an ephemeral port by default and recording the selected port before launching Claude Code.
 6. Wait for the local health check to succeed.
 7. Build a child environment and an ephemeral settings file for Claude Code, then start `claude` with `cwd=PROJECT_DIR`, attached to the parent's terminal.
@@ -175,7 +196,7 @@ The translator should run in the CLI process for the `run` command unless testin
 
 ## 6. Claude Code environment mapping
 
-The child process receives a temporary, session-only environment; the tool will not modify `~/.claude/settings.json` or the target project's `.claude/` files. Because shell-exported gateway variables do not reliably reach Claude Code background agents hosted by its supervisor, `run` will also create an ephemeral external settings file containing only the local gateway environment and pass it with `--settings`. That file will contain the random local token—not the NVIDIA credential—and will be deleted when the session ends. Managed settings that override these values will be detected and reported.
+The child process receives a temporary, session-only environment; the tool will not modify `~/.claude/settings.json` or the target project's `.claude/` files. Because shell-exported gateway variables do not reliably reach Claude Code background agents hosted by its supervisor, `run` will also create an ephemeral external JSON settings file containing only the local gateway environment and pass it with `--settings`. That file will contain the random local token—not the NVIDIA credential—and will be deleted when the session ends. Managed settings that override these values will be detected and reported. The exact file shape and launch contract are specified in section 7.1.
 
 | Variable | Value/purpose |
 |---|---|
@@ -208,6 +229,195 @@ The translator also maps any remaining `claude-*`, `opus`, `sonnet`, `haiku`, or
 | `POST /v1/messages/count_tokens` | Optional later endpoint; initially Claude Code's documented estimate fallback is acceptable. |
 
 The server binds only to loopback by default. A fixed host/port override is available for advanced use, but non-loopback binding requires an explicit warning and local bearer authentication remains mandatory.
+
+### 7.1 Wire-level contracts
+
+The following contracts are normative for the MVP. Tests must assert these shapes rather than accepting several variants.
+
+#### Local authentication
+
+- `run` always uses `ANTHROPIC_AUTH_TOKEN`. Claude Code maps that variable to `Authorization: Bearer <token>`; the proxy therefore validates exactly that header form.
+- `POST /v1/messages` and `POST /v1/messages/count_tokens` require the bearer token.
+- `GET /v1/models` also requires the bearer token because Claude Code performs credentialed gateway discovery. The `limit` query parameter is accepted and ignored.
+- `GET /healthz` and `HEAD /api/hello` are unauthenticated loopback probes and never expose upstream credentials or model data.
+- A missing or invalid local token produces an Anthropic-style `401` response with error type `authentication_error`.
+- Tokens are generated with `secrets.token_urlsafe(32)`, compared in constant time, accepted only in the header (never a query parameter), and never logged.
+
+#### Non-streaming Messages response
+
+A successful non-streaming response has this shape:
+
+```json
+{
+  "id": "msg_<random>",
+  "type": "message",
+  "role": "assistant",
+  "model": "nvidia/model-id",
+  "content": [
+    {"type": "text", "text": "Hello"}
+  ],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 12,
+    "output_tokens": 3
+  }
+}
+```
+
+A tool call is represented as:
+
+```json
+{"type": "tool_use", "id": "call_abc123", "name": "Read", "input": {"file_path": "/tmp/example"}}
+```
+
+The upstream OpenAI tool-call ID is preserved verbatim in `tool_use.id` so the next request's `tool_result.tool_use_id` can be translated back to the exact upstream `tool_call_id`. If the upstream omits an ID, the proxy generates a stable `toolu_<random>` ID for that response. The response `model` is the upstream model identifier when present, otherwise the resolved NVIDIA model ID. Missing usage values are represented as `0`.
+
+#### Anthropic SSE response
+
+Every SSE frame contains both an SSE event name and a matching JSON `type`. The canonical text-only sequence is:
+
+```text
+event: message_start
+data: {"type":"message_start","message":{"id":"msg_<random>","type":"message","role":"assistant","content":[],"model":"nvidia/model-id","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":3}}
+
+event: message_stop
+data: {"type":"message_stop"}
+```
+
+A tool-use block starts with the call ID and name, then receives partial JSON fragments:
+
+```text
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"call_abc123","name":"Read","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"file_path\":\"/tmp/example\"}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}
+```
+
+The stream may contain keepalive events at any point:
+
+```text
+event: ping
+data: {"type":"ping"}
+```
+
+The following invariants apply:
+
+- Content-block indices are contiguous, start at `0`, and correspond to the final message content array.
+- Every opened block emits exactly one `content_block_stop`. On a fatal mid-stream error, any open block is closed before the error event.
+- `message_delta.usage.output_tokens` is the cumulative final output count. `message_start.usage.input_tokens` carries the input count when known, otherwise `0`.
+- `stop_reason` and `stop_sequence` are always present in `message_delta`; `stop_sequence` is `null` unless an upstream stop sequence is known.
+- Exactly one terminal `message_delta` is emitted on a successful stream, followed by exactly one `message_stop`.
+- Unknown upstream SSE event types are ignored. A fatal upstream error is represented by the Anthropic error event described below rather than an OpenAI-shaped event.
+
+#### Anthropic error response
+
+HTTP errors use the Anthropic error envelope. The proxy generates its own non-secret request ID when one is not available from the upstream:
+
+```json
+{
+  "type": "error",
+  "error": {
+    "type": "invalid_request_error",
+    "message": "The request was invalid."
+  },
+  "request_id": "req_<random>"
+}
+```
+
+The MVP status mapping is:
+
+| Condition | HTTP status | Anthropic error type |
+|---|---:|---|
+| Malformed local request | 400 | `invalid_request_error` |
+| Missing/invalid local bearer token | 401 | `authentication_error` |
+| Upstream 401 | 401 | `authentication_error` |
+| Upstream 403 | 403 | `permission_error` |
+| Upstream 400 or 422 | 400 | `invalid_request_error` |
+| Upstream 404 | 404 | `not_found_error` |
+| Upstream 429 | 429 | `rate_limit_error` |
+| Upstream 408 or 504 | 504 | `timeout_error` |
+| Upstream 500 or 502 | 500 | `api_error` |
+| Upstream 503 | 529 | `overloaded_error` |
+| Upstream connection failure | 502 | `api_error` |
+
+Upstream messages are sanitized, truncated, and included only when useful. They must never contain credentials, raw request bodies, or unredacted exception text. `retry-after`, `x-should-retry`, and Anthropic rate-limit headers are preserved where safe.
+
+If an error occurs after a streaming response has started with HTTP 200, emit:
+
+```text
+event: error
+data: {"type":"error","error":{"type":"api_error","message":"NVIDIA NIM upstream error"}}
+```
+
+A fatal stream error is terminal; do not emit a successful `message_delta` or `message_stop` afterward.
+
+#### Claude Code temporary settings and launch
+
+`run` creates a regular JSON file with mode `0600`, referenced by an absolute path. Its initial shape is:
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:54321",
+    "ANTHROPIC_AUTH_TOKEN": "<random-local-token>",
+    "ANTHROPIC_MODEL": "anthropic-nim/nvidia/model-id",
+    "ANTHROPIC_CUSTOM_MODEL_OPTION": "anthropic-nim/nvidia/model-id",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "anthropic-nim/nvidia/model-id",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "anthropic-nim/nvidia/model-id",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "anthropic-nim/nvidia/model-id",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL": "anthropic-nim/nvidia/model-id",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "anthropic-nim/nvidia/model-id",
+    "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
+    "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "131072",
+    "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1"
+  }
+}
+```
+
+The launch command is:
+
+```text
+claude --settings <absolute-settings-path> [user-supplied Claude Code arguments...]
+```
+
+`claude` is resolved from `PATH`. The process starts with `cwd=PROJECT_DIR`, inherited standard streams, and a sanitized copy of the parent environment. The same local-only gateway values are placed in both the child environment and the settings file so normal sessions and supervisor-hosted background sessions receive them. Claude Code gives `--settings` values precedence over `settings.json` files and shell environment values for the same keys.
+
+Before launch, the child environment must remove `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, and `NVIDIA_API_KEY`, and replace any inherited `ANTHROPIC_AUTH_TOKEN` with the new local token. The NVIDIA key must never appear in the settings file, child environment, command line, or Claude Code subprocess environment.
+
+On POSIX, start Claude Code in a new process group. Forward `SIGINT` and `SIGTERM` to that group, wait for a bounded grace period, then terminate and kill it if necessary. In every exit path, stop the local server and delete the temporary settings file. Return Claude Code's exit status when it exits normally.
+
+#### Standalone `serve` token contract
+
+`serve` uses the same local authentication rules as `run`, but must give the user a way to supply the token to an independently launched Claude Code:
+
+- `--token-stdin` reads one token line from standard input and is the preferred automation path.
+- `--token-file PATH` reads one token line from a file; the CLI rejects a world/group-readable file unless the user explicitly accepts the warning.
+- If neither option is supplied, `serve` generates a random token and prints the base URL and token once to standard error as an export-ready snippet.
+- A token may not be accepted as a command-line argument because it would be visible in process listings and shell history.
+
+The printed snippet has this form and must not be written to a persistent file by the proxy:
+
+```bash
+export ANTHROPIC_BASE_URL='http://127.0.0.1:54321'
+export ANTHROPIC_AUTH_TOKEN='<random-local-token>'
+```
 
 ## 8. Request translation
 
@@ -286,13 +496,14 @@ Upstream errors will be converted to Anthropic-style errors, for example:
 }
 ```
 
-Planned mappings:
+Planned mappings follow the normative table in section 7.1:
 
-- 401/403 → `authentication_error`.
-- 400/404/422 → `invalid_request_error`, preserving a useful but sanitized upstream message.
-- 408/502/503/504 → `api_error` or `overloaded_error` as appropriate.
+- 401 → `authentication_error`; 403 → `permission_error`.
+- 400/422 → `invalid_request_error`, preserving a useful but sanitized upstream message.
+- 404 → `not_found_error` (used in diagnostics to distinguish model availability from other missing resources).
+- 408/504 → `timeout_error`; 500/502 → `api_error`; 503 → `overloaded_error`.
 - 429 → `rate_limit_error`, preserving `retry-after` and `x-should-retry` when present.
-- Upstream connection failure → 502 Anthropic error.
+- Upstream connection failure → HTTP 502 with Anthropic error type `api_error`.
 - Client disconnect → cancel upstream without generating another response.
 
 The proxy will not blindly retry billable generation requests. It will preserve retry headers so Claude Code can apply its documented retry behavior.
@@ -313,13 +524,13 @@ The command will:
 
 The NVIDIA endpoint exposes IDs but not capability metadata or per-account entitlements. Capability metadata will therefore be a bundled/generated data file maintained from NVIDIA's supported-model documentation and model cards, with user-config overrides for exceptions. The model catalog depends only on NVIDIA and local curated metadata.
 
-The model cache will live outside the project, proposed at:
+The model cache lives outside the project at:
 
 ```text
 ~/.config/claude-nim/models.json
 ```
 
-Suggested schema:
+Cache schema:
 
 ```json
 {
@@ -343,6 +554,12 @@ Suggested schema:
 }
 ```
 
+The bundled file `src/claude_nim_proxy/data/nvidia_models.json` uses the same model-object shape and a top-level `version`/`models` structure, but does not contain `updated_at`, `upstream_base_url`, or user overrides. `gateway_id` is derived from `upstream_id` rather than duplicated in the bundled source data. The cache may store the derived value for convenient inspection.
+
+`reasoning` and `tool_calling` are tri-state: `true`, `false`, or `null` for unknown. The `input` list contains supported modalities (`"text"` and optionally `"image"`). `metadata_source` is one of `bundled`, `user`, or `unknown`.
+
+A model absent from the bundled capability catalog remains selectable and receives conservative runtime defaults: `context_window = 32768`, `max_output_tokens = 4096`, `reasoning = null`, `tool_calling = null`, and `input = ["text"]`. Unknown tool-calling support is allowed on a best-effort basis because rejecting it would make an otherwise functional NIM model unusable with Claude Code; unknown image support is rejected locally with a clear capability error. A user override can replace any of these values.
+
 A model's presence in `/v1/models` does not guarantee that every NVIDIA key is entitled to call it. `doctor` and `auth verify` must distinguish catalog discovery from actual account entitlement and report a 404 from NVIDIA as an entitlement/model-availability problem.
 
 ## 12. Credential management
@@ -351,49 +568,140 @@ The CLI owns NVIDIA credential acquisition and persistence.
 
 ### Resolution order
 
+When the selected upstream authentication mode requires a credential, resolve it in this order:
+
 1. `NVIDIA_API_KEY` from the process environment. This takes precedence and is never written to persistent storage automatically.
 2. The OS credential store, using service name `claude-nim` and account name `nvidia`.
 3. An interactive `getpass` prompt when an interactive terminal is available. The entered key is stored before the command continues.
 4. In a non-interactive environment with no available credential, exit with an instruction to run `claude-nim auth login` or set `NVIDIA_API_KEY`.
 
+The `auto` authentication mode requires a credential for normal production upstreams. The `none` mode does not resolve or transmit a credential and is intended for automated fake-upstream tests. The `required` mode always resolves one.
+
 ### Commands
 
 - `claude-nim auth login`: securely prompt for the key, confirm the storage backend, and replace an existing stored credential when `--replace` is supplied.
 - `claude-nim auth status`: print only readiness and source (`environment`, `credential store`, `file fallback`, or `not configured`); never print any part of the key.
-- `claude-nim auth verify`: make an explicit minimal authenticated NVIDIA request and report success/failure. This may consume a small amount of API credit and will state that before running.
+- `claude-nim auth verify`: make an explicit minimal authenticated NVIDIA request and report success/failure. This may consume a small amount of API credit and will state that before running. It always resolves and sends a credential, independent of the `upstream_auth` mode used by `run` and `serve`.
 - `claude-nim auth logout`: remove the credential-store entry. It will not alter an environment-provided `NVIDIA_API_KEY` because that value is outside the CLI's ownership.
 
 There will be no recommended `--api-key` command-line option because command-line secrets leak through shell history and process listings. Automation should use `NVIDIA_API_KEY`.
 
 ### Storage
 
-The preferred backend is the Python `keyring` package, which uses Secret Service/KWallet on Linux, Keychain on macOS, and Credential Manager on Windows. If no OS backend is available, the CLI may fall back to `~/.config/claude-nim/credentials.json` with mode `0600`, clearly warn that the secret is stored on disk, and offer to remove it. The API key will never be written to `config.toml`, the model cache, project files, logs, or Claude Code's child environment.
+The preferred backend is the Python `keyring` package, which uses Secret Service/KWallet on Linux, Keychain on macOS, and Credential Manager on Windows. If no OS backend is available, the CLI falls back to `~/.config/claude-nim/credentials.json` with mode `0600`, clearly warns that the unencrypted secret is stored on disk, and offers to remove it. The API key will never be written to `config.toml`, the model cache, project files, logs, or Claude Code's child environment.
 
 ## 13. Configuration
 
-Proposed user config path:
+### File format and location
+
+The user config path is:
 
 ```text
 ~/.config/claude-nim/config.toml
 ```
 
-Example:
+A missing config file is valid and means that all values use their defaults. The CLI parses the file with Python's standard-library `tomllib` and validates it against the schema below. Unknown top-level keys, unknown per-model keys, invalid value types, and invalid enum values are configuration errors with the offending key named; silently ignoring them would hide configuration mistakes.
+
+A complete example is:
 
 ```toml
 default_model = "nvidia/nemotron-3-super-120b-a12b"
+verify_model = "nvidia/nemotron-3-super-120b-a12b"
 upstream_base_url = "https://integrate.api.nvidia.com/v1"
+upstream_auth = "auto"
 listen_host = "127.0.0.1"
 listen_port = 0
 context_window = 131072
+max_output_tokens = 32768
 disable_experimental_betas = true
+upstream_connect_timeout_seconds = 10
+upstream_read_timeout_seconds = 600
+debug = false
+
+[model_overrides."nvidia/nemotron-3-super-120b-a12b"]
+display_name = "NVIDIA Nemotron 3 Super 120B A12B (NIM)"
+context_window = 131072
+max_output_tokens = 32768
+reasoning = true
+input = ["text", "image"]
+tool_calling = true
 ```
 
-Environment variables override config values, and CLI flags override both. The API key is never stored in this configuration file; the `auth` commands manage it separately in the OS credential store or the explicitly warned file fallback.
+The supported top-level keys are:
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `default_model` | string | unset | Raw NVIDIA ID or reversible `anthropic-nim/...` gateway ID used when no CLI or environment model is supplied. |
+| `verify_model` | string | `default_model` | Model used by `auth verify` for its explicit minimal authenticated request. |
+| `upstream_base_url` | string | `https://integrate.api.nvidia.com/v1` | OpenAI-compatible NVIDIA base URL, normally ending in `/v1`. |
+| `upstream_auth` | string enum | `auto` | Upstream credential policy: `auto`, `required`, or `none` as defined below. |
+| `listen_host` | string | `127.0.0.1` | Local bind address. A non-loopback value is rejected unless explicitly allowed. |
+| `listen_port` | integer | `0` | `0` selects an ephemeral port. |
+| `context_window` | integer | `32768` | Global fallback context size when a selected model has no curated or per-model override. |
+| `max_output_tokens` | integer | `4096` | Global fallback output limit when a selected model has no curated or per-model override. |
+| `disable_experimental_betas` | boolean | `true` | Default value for `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS` in the Claude Code child. |
+| `upstream_connect_timeout_seconds` | number | `10` | Upstream connection timeout. |
+| `upstream_read_timeout_seconds` | number | `600` | Upstream response/read timeout, including streamed generation. |
+| `debug` | boolean | `false` | Enable redacted diagnostic logging. |
+| `model_overrides` | table | empty | Per-NVIDIA-model capability overrides keyed by the raw upstream model ID. |
+
+A per-model override accepts exactly these keys:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `display_name` | string | Human-readable name shown by `models list` and Claude Code discovery. |
+| `context_window` | positive integer | Context window in tokens. |
+| `max_output_tokens` | positive integer | Maximum output in tokens. |
+| `reasoning` | boolean or `null` | Whether the model supports reasoning; `null` means unknown. |
+| `input` | array of strings | Supported input modalities; only `"text"` and `"image"` are valid. |
+| `tool_calling` | boolean or `null` | Whether the model reliably supports tool calls; `null` means unknown/best-effort. |
+
+Capability precedence is: user per-model override, bundled per-model metadata, global config fallback, then conservative unknown-model defaults. `models update` may refresh IDs and bundled metadata but must never overwrite user configuration.
+
+`upstream_auth` has these exact meanings:
+
+- `auto`: require and send a credential for a normal production upstream.
+- `required`: always resolve and send a credential; fail if none is available.
+- `none`: never resolve or send an NVIDIA credential.
+
+### Environment and CLI precedence
+
+Configuration precedence is strict:
+
+1. Explicit CLI flag.
+2. Environment variable.
+3. `config.toml` value.
+4. Built-in default.
+
+The supported environment variables are:
+
+| Variable | Equivalent setting |
+|---|---|
+| `NVIDIA_MODEL` | `default_model` |
+| `NVIDIA_BASE_URL` | `upstream_base_url` |
+| `CLAUDE_NIM_UPSTREAM_AUTH` | `upstream_auth` |
+| `CLAUDE_NIM_VERIFY_MODEL` | `verify_model` |
+| `CLAUDE_NIM_LISTEN_HOST` | `listen_host` |
+| `CLAUDE_NIM_LISTEN_PORT` | `listen_port` |
+| `CLAUDE_NIM_CONTEXT_WINDOW` | `context_window` |
+| `CLAUDE_NIM_MAX_OUTPUT_TOKENS` | `max_output_tokens` |
+| `CLAUDE_NIM_DISABLE_EXPERIMENTAL_BETAS` | `disable_experimental_betas` |
+| `CLAUDE_NIM_UPSTREAM_CONNECT_TIMEOUT_SECONDS` | `upstream_connect_timeout_seconds` |
+| `CLAUDE_NIM_UPSTREAM_READ_TIMEOUT_SECONDS` | `upstream_read_timeout_seconds` |
+| `CLAUDE_NIM_DEBUG` | `debug` |
+
+Boolean environment variables accept `1`/`true`/`yes` and `0`/`false`/`no`, case-insensitively. Integer and numeric values must parse exactly and must be positive where the setting requires a positive value.
+
+The common CLI flags are `--model`, `--upstream-base-url`, `--upstream-auth`, `--listen-host`, `--listen-port`, `--context-window`, `--max-output-tokens`, `--debug`, `--allow-non-loopback`, and the mutually exclusive `--disable-experimental-betas`/`--enable-experimental-betas`. Subcommands may add command-specific flags, but they must follow the same precedence rule.
+
+The NVIDIA API key is never stored in this configuration file; the `auth` commands manage it separately in the OS credential store or the explicitly warned file fallback. `NVIDIA_API_KEY` is a credential input rather than a normal configuration override.
+
+If `--model`, `NVIDIA_MODEL`, and `default_model` are all absent, the CLI must fail with the actionable model-selection message defined in section 5 rather than choosing a model from the cache.
 
 ## 14. Security and privacy
 
 - Bind to `127.0.0.1` by default.
-- Generate a random local bearer token per run and validate `Authorization`/`x-api-key` on Claude-facing endpoints.
+- Generate a random local bearer token per run and validate `Authorization: Bearer <token>` on credentialed Claude-facing endpoints.
 - Resolve the NVIDIA credential from the environment or OS credential store into proxy memory only. The persistent copy may exist only in the OS credential store, or in the mode-`0600` fallback file after an explicit warning; never place it in command-line arguments, logs, the model cache, project files, or Claude Code's child environment.
 - Redact `Authorization`, `x-api-key`, and configured secrets from all debug output.
 - Do not log prompts, tool schemas, message bodies, or responses by default.
@@ -401,9 +709,11 @@ Environment variables override config values, and CLI flags override both. The A
 - Propagate cancellation promptly when Claude Code exits or disconnects.
 - Clearly document that project content, prompts, tool definitions, and tool results are sent to the configured NVIDIA upstream.
 
-## 15. Proposed package layout
+## 15. Package layout
 
 ```text
+AGENTS.md
+plan.md
 pyproject.toml
 README.md
 src/claude_nim_proxy/
@@ -458,6 +768,7 @@ Development dependencies will be limited to `pytest`, `pytest-asyncio`, `ruff`, 
 - Assistant tool use, user tool results, parallel calls, and round-trip IDs.
 - Unsupported field dropping (`cache_control`, `strict`, `defer_loading`, Anthropic-only thinking/context fields).
 - Stop-reason and usage mapping.
+- Exact non-streaming Anthropic response envelope and tool-use block shape.
 - Model alias, raw NVIDIA ID, and Claude fallback mapping.
 
 ### SSE state-machine tests
@@ -471,6 +782,8 @@ Development dependencies will be limited to `pytest`, `pytest-asyncio`, `ruff`, 
 - No buffered first token.
 - Ping emission during a slow upstream.
 - Exactly-once content-block close and final `message_stop`.
+- Exact event names, JSON fields, contiguous content-block indices, and cumulative usage in the section 7.1 frames.
+- Fatal error-frame conversion, including closing an open block before the Anthropic error event.
 
 ### Gateway integration tests
 
@@ -482,22 +795,35 @@ Use a small fake NVIDIA server to verify:
 - Streaming content type and incremental delivery.
 - `GET /v1/models` alias format and Claude-compatible filtering.
 - `HEAD /api/hello` and `/healthz`.
-- 401, 404, 429, 500, timeout, and malformed-upstream handling.
+- 401, 403, 404, 422, 429, 500, 502, 503, 504, timeout, and malformed-upstream handling.
+- Exact Anthropic error status/body mapping from section 7.1, including a generated non-secret `request_id`.
+- Local bearer authentication on `/v1/messages` and `/v1/models`, with unauthenticated loopback probes.
 - Client cancellation cancels the upstream request.
 
 ### CLI tests
 
 Use a fake `claude` executable and a mocked credential-store backend to verify:
 
-- Correct project directory and Claude arguments.
-- Correct child environment.
-- NVIDIA key absent from the Claude child environment.
+- Correct project directory, exact `claude --settings <path> ...` launch, and Claude arguments.
+- Exact mode-`0600` temporary settings-file shape and deletion on every exit path.
+- Correct child environment and Claude Code settings-file/environment precedence.
+- NVIDIA key absent from the Claude child environment and temporary settings file.
 - Claude exit code propagation.
 - Ctrl-C/termination cleanup and no orphaned listener.
 - Fixed and ephemeral port behavior.
 - Environment, credential-store, interactive-prompt, and missing-credential resolution paths.
+- `auto`, `required`, and `none` upstream authentication modes, including credential-free fake-upstream tests.
 - `auth login`, `auth status`, `auth verify`, and `auth logout` behavior without revealing secrets.
 - Model cache atomic update and no secret persistence.
+- `serve` token sources (`--token-stdin`, `--token-file`, and generated-token output) without accepting a token in command-line arguments.
+- No implicit model selection when `--model`, `NVIDIA_MODEL`, and `default_model` are absent.
+
+### Configuration tests
+
+- Valid TOML parsing and rejection of unknown keys, invalid types, invalid enum values, and invalid per-model override fields.
+- Strict CLI → environment → config → default precedence for every supported setting.
+- Capability precedence across per-model overrides, bundled metadata, global fallback, and conservative unknown-model defaults.
+- Atomic writes for the model cache and user config when the CLI creates or updates them.
 
 ### Real smoke tests
 
@@ -513,12 +839,16 @@ Against a supported NVIDIA model:
 
 ## 17. Implementation phases
 
-### Phase 1 — Project scaffold and pure translators
+Agents follow `AGENTS.md` and work in tracker order. A phase should normally fit one focused session; when it does not, stop at a tested boundary, update the implementation tracker, commit the completed portion, and resume from the tracker in the next session.
 
-- Create package metadata and CLI skeleton.
+### Phase 1 — Scaffold completion and pure translators
+
+- The uv package scaffold already exists in commit `da83fc5`; verify and preserve it rather than recreating it.
+- Implement the CLI entry-point skeleton and typed configuration model without performing network I/O.
 - Implement pure Anthropic ↔ OpenAI request/response functions.
 - Implement the Anthropic SSE state machine.
 - Add focused unit tests before adding I/O.
+- Update the tracker with validation results and the Phase 1 commit.
 
 ### Phase 2 — Local gateway
 
@@ -540,8 +870,7 @@ Against a supported NVIDIA model:
 
 - Test current Claude Code releases against text, tools, images, subagents, background calls, and long streams.
 - Add redacted debug tracing.
-- Write README usage, NVIDIA setup, local NIM setup, model-selection guidance, security notes, and troubleshooting.
-- Add an optional native Anthropic-upstream passthrough mode for recent local NIM releases if it remains small and clearly separated from the OpenAI translator.
+- Write README usage, hosted NVIDIA setup, model-selection guidance, security notes, and troubleshooting.
 
 ## 18. Acceptance criteria
 
@@ -558,18 +887,22 @@ The MVP is complete when:
 - The NVIDIA key is not present in the Claude Code child environment, logs, cache, or process arguments.
 - The proxy shuts down cleanly when Claude Code exits or receives an interrupt.
 - The test suite passes without a live NVIDIA account; live NVIDIA and Claude Code smoke tests are documented separately.
+- The local gateway emits the exact Anthropic response, SSE, and error envelopes specified in section 7.1.
+- The Claude Code child is launched with the exact temporary settings shape and command-line contract specified in section 7.1, with no NVIDIA credential inherited.
+- Configuration precedence and capability overrides follow section 13 exactly, and an unspecified model is never selected implicitly.
+- The implementation tracker records the final validation evidence and completed-phase commit.
 
-## 19. Decisions to confirm before implementation
+## 19. Confirmed implementation decisions
 
-The following defaults are recommended, but should be confirmed at implementation start:
+All decisions below are confirmed by the user and are binding for implementation:
 
 1. **CLI/package name:** use `claude-nim` / `claude-nim-proxy`.
-2. **Default upstream:** hosted NVIDIA NIM (`https://integrate.api.nvidia.com/v1`), with local NIM selected by flag/config.
+2. **Upstream target:** hosted NVIDIA NIM only (`https://integrate.api.nvidia.com/v1`). Local/self-hosted NIM deployment and alternate providers are out of scope. The configurable base URL remains available for automated fake-upstream tests.
 3. **Platform target:** Linux/macOS first; Windows path and signal behavior can follow after the core is stable.
 4. **Images:** include basic image conversion in the MVP, but reject unsupported models with a clear message.
-5. **Experimental Anthropic betas:** disabled by default in the Claude Code child, with an override for testing.
-6. **Native NIM Anthropic endpoint:** document the direct bypass immediately; implement optional passthrough only after the core translator is stable.
-7. **Credential storage:** prefer the OS credential store through `keyring`; use a mode-`0600` file only as an explicitly warned fallback.
+5. **Experimental Anthropic betas:** disable them by default in the Claude Code child, with an explicit override for testing.
+6. **Native NIM Anthropic endpoint:** not applicable and out of scope. The project will not implement native Anthropic passthrough or a local-NIM bypass.
+7. **Credential storage:** prefer the OS credential store through `keyring`; use a mode-`0600` file only as an explicitly warned, unencrypted fallback.
 
 ## 20. Sources
 
@@ -579,13 +912,15 @@ The following defaults are recommended, but should be confirmed at implementatio
 - Claude Code gateway compatibility guide: <https://code.claude.com/docs/en/llm-gateway-protocol>
 - Roll out an LLM gateway: <https://code.claude.com/docs/en/llm-gateway-rollout>
 - Claude Code model configuration: <https://code.claude.com/docs/en/model-config>
+- Claude Code CLI reference (including `--settings`): <https://code.claude.com/docs/en/cli-reference>
 - Anthropic Messages API: <https://platform.claude.com/docs/en/api/messages>
+- Anthropic streaming event contract: <https://platform.claude.com/docs/en/build-with-claude/streaming>
+- Anthropic HTTP error contract: <https://platform.claude.com/docs/en/api/errors>
 - Anthropic tool use: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview>
 
 ### Official NVIDIA documentation
 
 - NVIDIA NIM LLM/VLM API reference: <https://docs.nvidia.com/nim/large-language-models/latest/reference/api-reference.html>
-- Use Claude Code with NIM: <https://docs.nvidia.com/nim/large-language-models/latest/ai-assistant-integrations/claude-code.html>
 - NVIDIA NIM tool calling and MCP integration: <https://docs.nvidia.com/nim/large-language-models/latest/advanced-use-cases/tool-calling-and-mcp.html>
 - NVIDIA NIM quickstart/model discovery: <https://docs.nvidia.com/nim/large-language-models/latest/get-started/quickstart.html>
 - NVIDIA supported models: <https://docs.nvidia.com/nim/large-language-models/latest/supported-models.html>
