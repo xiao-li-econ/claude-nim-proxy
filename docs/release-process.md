@@ -84,6 +84,15 @@ prints it.
 8. **Announce.** The GitHub release page is the announcement; link it from the README
    "What's new" section if the release is significant.
 
+## Maintenance notes
+
+- GitHub Actions are pinned to exact versions (`actions/checkout@v7.0.1`,
+  `astral-sh/setup-uv@v10.3.2`, `pypa/gh-action-pypi-publish@release/v1`). Bump them
+  deliberately, and confirm that a new `astral-sh/setup-uv` major tag exists before
+  moving to it — the project does not publish a floating tag for every major.
+- The CI workflow pins the `uv` binary to the version that produced `uv.lock`
+  (`0.9.2`). Update both together when upgrading uv.
+
 ## Installing a released version
 
 ```bash
