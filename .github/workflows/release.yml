@@ -3,6 +3,12 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to publish, for example v0.1.0"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -17,9 +23,13 @@ jobs:
     permissions:
       contents: write
       id-token: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - name: Check out the repository
         uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v10.3.2
@@ -45,9 +55,9 @@ jobs:
       - name: Verify that the tag matches the project version
         run: |
           version="$(uv run python -c 'import claude_nim_proxy; print(claude_nim_proxy.__version__)')"
-          tag="${GITHUB_REF_NAME#v}"
+          tag="${RELEASE_TAG#v}"
           if [ "$version" != "$tag" ]; then
-            echo "Tag ${GITHUB_REF_NAME} does not match project version ${version}." >&2
+            echo "Tag ${RELEASE_TAG} does not match project version ${version}." >&2
             exit 1
           fi
           echo "Releasing version ${version}"
@@ -57,13 +67,14 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
 
       - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ github.ref_name }}
         run: |
-          version="${VERSION#v}"
+          version="${RELEASE_TAG#v}"
           python - "$version" > release-notes.md <<'PY'
           import re
           import sys
@@ -77,11 +88,15 @@ jobs:
           )
           print(match.group(0).strip() if match else f"## {version}")
           PY
-          {
-            cat release-notes.md
-            echo
-            echo "Full changelog: https://github.com/${GITHUB_REPOSITORY}/blob/main/CHANGELOG.md"
-          } >> release-notes.md
-          gh release create "$VERSION" \
-            --title "$VERSION" \
-            --notes-file release-notes.md
+          printf '\nFull changelog: https://github.com/%s/blob/main/CHANGELOG.md\n' \
+            "$GITHUB_REPOSITORY" >> release-notes.md
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "GitHub release ${RELEASE_TAG} already exists; refreshing its notes."
+            gh release edit "$RELEASE_TAG" \
+              --title "$RELEASE_TAG" \
+              --notes-file release-notes.md
+          else
+            gh release create "$RELEASE_TAG" \
+              --title "$RELEASE_TAG" \
+              --notes-file release-notes.md
+          fi
