@@ -85,6 +85,10 @@ def _capture_run_model(monkeypatch) -> list[str]:
         return 0
 
     monkeypatch.setattr("claude_nim_proxy.cli._run_gateway_and_claude", fake_gateway)
+    monkeypatch.setattr(
+        "claude_nim_proxy.cli.resolve_claude_executable",
+        lambda: "/usr/local/bin/claude",
+    )
     return captured
 
 

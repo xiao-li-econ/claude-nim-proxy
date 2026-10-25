@@ -24,6 +24,7 @@ This table is the durable handoff state between sessions. Update it whenever a p
 | Post-MVP refinement — Pi-backed active model catalog | Complete | 144 default tests passed (5 live-Claude tests skipped); all 5 opt-in Claude Code compatibility tests passed; Ruff, mypy, and `uv build` passed; commit `a6fa5fd`; merged as `6e0854c` | Replaces NVIDIA's official catalog integration with a bundled initialization/reset template plus a locally maintained active JSON that is synchronized from `pi --list-models nvidia` when available. Adds `models reset`, `run --refresh-models`, portable model-JSON help, legacy v1 archival, and removes `model_overrides` from `config.toml`. |
 | Post-MVP refinement — Shipped default model and `config set` | Complete | 162 default tests passed (5 live-Claude tests skipped); all 5 opt-in Claude Code compatibility tests passed; Ruff, mypy, and `uv build` passed; commit `0f2d84a`; merged as `1f14c77` | Ships `minimaxai/minimax-m3.1-flash` as the built-in default model and adds `claude-nim config set default_model <id>` plus `claude-nim config show` so users can store and inspect their own default. `config.toml` is created only by the explicit `config set` command. |
 | Post-MVP refinement — Public installation docs and MIT license | Complete | 162 default tests passed (5 live-Claude tests skipped); Ruff, mypy, and `uv build` passed; isolated `uv tool install` verified against the built wheel and the git URL; commit `cb4af97`; merged as `5dde51f` | Adds an installation section to `README.md` (uv tool, uvx, pipx, venv+pip, clone), the MIT `LICENSE` file, and PEP 639 license metadata plus classifiers in `pyproject.toml` so the repository can be published publicly. |
+| Post-MVP refinement — Release automation and packaging metadata | Complete (pending merge) | 164 default tests passed (5 live-Claude tests skipped); all 5 opt-in Claude Code compatibility tests passed; Ruff, mypy, and `uv build` passed; workflow YAML parsed and the release steps simulated locally; commit `0d471ff` | Adds CI and tag-triggered release workflows, `CHANGELOG.md`, `docs/release-process.md`, project URLs, and a single-source version (`pyproject.toml` → package metadata → `claude-nim --version`). |
 
 **Current next action:** Await the next user-confirmed scope. All implementation decisions in section 19 are confirmed and binding.
 
@@ -727,10 +728,17 @@ If `--model`, `NVIDIA_MODEL`, and `default_model` are all absent, the CLI must f
 
 ```text
 AGENTS.md
+CHANGELOG.md
 LICENSE
 plan.md
 pyproject.toml
 README.md
+.github/workflows/
+  ci.yml
+  release.yml
+docs/
+  release-process.md
+  smoke-tests.md
 src/claude_nim_proxy/
   __init__.py
   cli.py
@@ -931,6 +939,7 @@ All decisions below are confirmed by the user and are binding for implementation
 14. **Configuration scope:** `config.toml` is optional, contains general proxy settings only, and is created only by an explicit `claude-nim config set` command. Per-model capability overrides are removed; model maintenance belongs in the active JSON.
 15. **Shipped default model:** When no model is selected through `--model`, `NVIDIA_MODEL`, or `config.toml`, the proxy uses `minimaxai/minimax-m3.1-flash`. Users replace it with `claude-nim config set default_model <id>`.
 16. **Configuration command:** `claude-nim config show` reports the effective configuration and the origin of each value; `claude-nim config set <key> <value>` validates the value, preserves other settings, and rewrites `config.toml` atomically with mode `0600`.
+17. **Release model:** Releases are SemVer versions cut from `main` with a `vX.Y.Z` Git tag. The tag triggers CI that validates, builds, publishes to PyPI through trusted publishing, and creates a GitHub release. `pyproject.toml` is the single source of the version; `CHANGELOG.md` follows Keep a Changelog.
 
 ## 20. Sources
 
