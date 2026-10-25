@@ -10,6 +10,7 @@ from typing import Any
 import aiohttp
 
 from .config import UpstreamAuth
+from .diagnostics import debug_logger, safe_model
 from .translate.errors import (
     AnthropicError,
     default_error_message,
@@ -84,6 +85,8 @@ class NvidiaCatalogClient:
     async def fetch_catalog(self) -> dict[str, Any]:
         """Fetch and decode the OpenAI-style NVIDIA model catalog."""
 
+        logger = debug_logger()
+        logger.debug("upstream catalog request method=GET path=/v1/models")
         try:
             response = await self._session.get(
                 self.models_url,
@@ -103,6 +106,7 @@ class NvidiaCatalogClient:
                 "Could not connect to the NVIDIA NIM model catalog.",
             ) from exc
 
+        logger.debug("upstream catalog response status=%s", response.status)
         try:
             if 200 <= response.status < 300:
                 body = await response.read()
@@ -166,6 +170,7 @@ class NvidiaUpstreamClient:
         """Send a non-streaming request and decode its JSON response."""
 
         response = await self._post(self.chat_completions_url, payload)
+        debug_logger().debug("upstream response status=%s stream=false", response.status)
         try:
             if 200 <= response.status < 300:
                 body = await response.read()
@@ -199,6 +204,7 @@ class NvidiaUpstreamClient:
         """Open a streaming request and return its live response body."""
 
         response = await self._post(self.chat_completions_url, payload)
+        debug_logger().debug("upstream response status=%s stream=true", response.status)
         if not 200 <= response.status < 300:
             try:
                 body = await _read_limited(response)
@@ -221,6 +227,11 @@ class NvidiaUpstreamClient:
 
     async def _post(self, url: str, payload: dict[str, Any]) -> aiohttp.ClientResponse:
         accept = "text/event-stream" if payload.get("stream") is True else "application/json"
+        debug_logger().debug(
+            "upstream request method=POST path=/v1/chat/completions model=%s stream=%s",
+            safe_model(payload.get("model")),
+            payload.get("stream") is True,
+        )
         headers = {"Accept": accept}
         if self._auth_mode is not UpstreamAuth.NONE:
             if not self._api_key:

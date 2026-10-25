@@ -18,9 +18,9 @@ This table is the durable handoff state between sessions. Update it whenever a p
 | Phase 2 — Local gateway | Complete | 89 tests passed; Ruff, mypy, and `uv build` passed; commit `7d7c305` | Added the aiohttp server, local bearer authentication, NVIDIA upstream client, health/model endpoints, Anthropic error conversion, timeouts, cancellation handling, standalone `serve`, and fake-upstream integration tests. |
 | Phase 3 — Models and discovery | Complete | 117 tests passed; Ruff, mypy, and `uv build` passed; commits `61723cf`, `33dab7a` | Added public NVIDIA catalog refresh, bundled capability metadata, capability precedence, atomic credential-free cache storage, reversible aliases, model list/update commands, cached gateway discovery, and model-specific image capability checks. The curated overlay was expanded to 19 hosted agentic/tool-calling models with NVIDIA-published context, output, reasoning, image, and tool-calling values. |
 | Phase 4 — Credentials and one-command runner | Complete | 133 tests passed; Ruff, mypy, and `uv build` passed; commit `361e816` | Added `auth login/status/verify/logout`, environment/keyring/file-fallback credential resolution, secure prompts, a one-command Claude Code launcher, isolated mode-0600 settings, signal forwarding and cleanup, and doctor diagnostics. |
-| Phase 5 — Compatibility hardening and documentation | Not started | — | Complete live compatibility work, redacted tracing, README, and documented smoke tests. |
+| Phase 5 — Compatibility hardening and documentation | In progress | Branch `feature/phase-4-runner` | Adding redacted tracing and offline Claude Code compatibility coverage; live NVIDIA smoke tests require explicit billable-request approval. |
 
-**Current next action:** Merge Phase 4 from `feature/phase-4-runner` (`361e816`), then start Phase 5 compatibility hardening and documentation. All implementation decisions in section 19 are confirmed and binding.
+**Current next action:** Continue Phase 5 compatibility hardening and documentation on `feature/phase-4-runner`; do not make live billable NVIDIA requests without explicit approval. All implementation decisions in section 19 are confirmed and binding.
 
 ## 1. Goal
 

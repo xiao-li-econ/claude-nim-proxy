@@ -29,6 +29,7 @@ from .credentials import (
     CredentialSource,
     ResolvedCredential,
 )
+from .diagnostics import configure_debug, set_debug_secrets
 from .models import (
     ModelCache,
     ModelCacheError,
@@ -134,6 +135,7 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         parser.error(str(exc))
         return 2
+    configure_debug(config.debug)
 
     if namespace.command == "run":
         return _run_with_claude(
@@ -305,6 +307,11 @@ async def _run_gateway_and_claude(
     allow_non_loopback: bool,
 ) -> int:
     local_token = secrets.token_urlsafe(32)
+    set_debug_secrets(
+        secret
+        for secret in (local_token, credential.api_key if credential is not None else None)
+        if secret is not None
+    )
     try:
         settings = _gateway_settings(
             config,
@@ -434,6 +441,11 @@ def _serve_gateway(
     except CredentialError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    set_debug_secrets(
+        secret
+        for secret in (token, credential.api_key if credential is not None else None)
+        if secret
+    )
 
     try:
         settings = _gateway_settings(
@@ -657,6 +669,7 @@ def _auth_verify(
         return 2
     if credential.source is CredentialSource.FILE:
         _warn_file_fallback(manager, credential)
+    set_debug_secrets((credential.api_key,))
     print(
         "Sending one minimal authenticated NVIDIA request; this may consume a small amount "
         "of API credit.",
@@ -875,6 +888,7 @@ def _doctor_command(config: AppConfig) -> int:
         results.append((False, f"Credential: {exc}"))
     if credential is not None:
         results.append((True, f"Credential: configured ({credential.source})"))
+        set_debug_secrets((credential.api_key,))
         if credential.source is CredentialSource.FILE:
             print(
                 "WARNING: the NVIDIA credential is stored unencrypted in "

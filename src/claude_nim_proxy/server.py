@@ -15,6 +15,7 @@ import aiohttp
 from aiohttp import web
 
 from .config import UpstreamAuth
+from .diagnostics import debug_logger, safe_model
 from .translate.anthropic_to_openai import (
     GATEWAY_MODEL_PREFIX,
     RequestTranslationError,
@@ -142,6 +143,14 @@ class Gateway:
                 )
             supports_images = self.settings.supports_images_for(resolved_model)
 
+        logger = debug_logger()
+        logger.debug(
+            "gateway request method=%s path=%s model=%s stream=%s",
+            request.method,
+            request.path,
+            safe_model(requested_model),
+            request_body.get("stream") is True,
+        )
         try:
             translated = translate_request(
                 request_body,
@@ -179,6 +188,8 @@ class Gateway:
                     headers={"WWW-Authenticate": "Bearer"},
                 )
             )
+        logger = debug_logger()
+        logger.debug("gateway models request model_count=%s", len(self.settings.raw_model_ids))
         data = [
             {
                 "id": f"{GATEWAY_MODEL_PREFIX}{model_id}",
@@ -227,6 +238,10 @@ class Gateway:
                 )
             )
         headers = safe_upstream_headers(upstream_response.headers)
+        debug_logger().debug(
+            "gateway response status=200 model=%s stream=false",
+            safe_model(response_body.get("model")),
+        )
         return web.json_response(response_body, headers=headers)
 
     async def _handle_streaming(
@@ -244,6 +259,10 @@ class Gateway:
         }
         response_headers.update(safe_upstream_headers(upstream_stream.headers))
         response = web.StreamResponse(status=200, headers=response_headers)
+        debug_logger().debug(
+            "gateway response status=200 model=%s stream=true",
+            safe_model(translated.get("model")),
+        )
         try:
             await response.prepare(request)
             chunks = _DisconnectAwareChunks(upstream_stream.chunks(), request)

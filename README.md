@@ -3,12 +3,13 @@
 A thin local translator that lets Claude Code use NVIDIA NIM models through the Anthropic Messages API.
 
 The current implementation includes the Phase 1 translators, the Phase 2 local gateway,
-Phase 3 model discovery, and the Phase 4 credential manager and one-command runner. It
-provides strict typed configuration, Anthropic/OpenAI request and response translation,
-incremental SSE translation, an authenticated loopback HTTP gateway, an NVIDIA upstream
-client, Anthropic-style error conversion, timeouts, cancellation handling, a
-credential-free NVIDIA model catalog cache, secure CLI-managed credentials, and an
-isolated Claude Code launcher.
+Phase 3 model discovery, the Phase 4 credential manager and one-command runner, and
+Phase 5 compatibility hardening with redacted diagnostics. It provides strict typed
+configuration, Anthropic/OpenAI request and response translation, incremental SSE
+translation, an authenticated loopback HTTP gateway, an NVIDIA upstream client,
+Anthropic-style error conversion, timeouts, cancellation handling, a credential-free
+NVIDIA model catalog cache, secure CLI-managed credentials, an isolated Claude Code
+launcher, and metadata-only debug tracing.
 
 ## One-command usage
 
@@ -145,6 +146,35 @@ uv run claude-nim doctor
 availability, the public NVIDIA catalog, and account entitlement to the selected model.
 The entitlement probe sends one minimal authenticated request and may consume a small
 amount of API credit.
+
+## Redacted diagnostics
+
+Enable metadata-only debug tracing with `--debug` or `CLAUDE_NIM_DEBUG=1`:
+
+```bash
+uv run claude-nim serve --model nvidia/nemotron-3-super-120b-a12b --debug
+```
+
+Debug output records request method/path, selected model, stream mode, and upstream
+status. It never records prompts, message bodies, tool schemas, or response content.
+Authorization/API-key headers, the random local token, and the configured NVIDIA key
+are redacted.
+
+## Compatibility smoke tests
+
+The default test suite is offline and uses a fake NVIDIA upstream. An opt-in suite
+launches the installed Claude Code CLI against that fake upstream to verify text,
+tools, images, foreground subagents, and background subagents without contacting
+NVIDIA:
+
+```bash
+CLAUDE_NIM_RUN_CLAUDE_COMPAT=1 \
+  uv run pytest -q tests/test_claude_code_live.py -vv
+```
+
+The complete automated and live hosted-NVIDIA procedures are documented in
+[`docs/smoke-tests.md`](docs/smoke-tests.md). Live NVIDIA requests may consume API
+credit and require explicit approval before they are run.
 
 ## Architecture
 

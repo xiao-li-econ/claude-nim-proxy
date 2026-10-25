@@ -271,6 +271,29 @@ async def test_ping_is_emitted_while_upstream_is_quiet() -> None:
     assert messages[-1].event == "message_stop"
 
 
+async def test_long_stream_emits_every_delta_and_one_terminal_stop() -> None:
+    async def long_chunks() -> AsyncIterator[bytes]:
+        for _ in range(2_000):
+            yield _event({"choices": [{"delta": {"content": "x"}, "finish_reason": None}]})
+        yield _event(
+            {
+                "choices": [{"delta": {}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 2_000},
+            }
+        )
+        yield b"data: [DONE]\n\n"
+
+    messages = [
+        message async for message in translate_stream(long_chunks(), "nvidia/model")
+    ]
+
+    deltas = [message for message in messages if message.event == "content_block_delta"]
+    assert len(deltas) == 2_000
+    assert sum(len(message.data["delta"]["text"]) for message in deltas) == 2_000
+    assert [message.event for message in messages[-2:]] == ["message_delta", "message_stop"]
+    assert messages[-2].data["usage"] == {"output_tokens": 2_000}
+
+
 async def test_sse_message_encoding_has_matching_event_and_type() -> None:
     messages = await _collect(_event({"choices": [{"delta": {"content": "Hello"}}]}))
     encoded = messages[0].encode().decode()
