@@ -1,11 +1,11 @@
 # Implementation Plan: Thin Claude Code ↔ NVIDIA NIM Proxy
 
-- **Status:** The MVP is merged into `main` through PR #4; the curated model-picker refinement is merged into `main` through PR #5; expansion of the curated catalog to every NVIDIA model visible through Pi is merged into `main` through PR #6.
+- **Status:** The MVP and prior refinements are merged into `main`; the user-confirmed Pi-backed active-model-catalog refinement is implemented and validated on `feature/pi-model-catalog-source`, pending merge.
 - **Research snapshot:** 2026-10-24
 - **Verified local versions:** Python 3.12.3, Claude Code 2.1.310, uv 0.9.2, Node.js 24.14.1
 - **Repository:** Git repository; Phase 4 is implemented in commit `361e816` and Phase 5 in commit `f6ae342`, merged into `main` through PR #4 as merge commit `e377a50`; the curated model-picker refinement is commit `ef609ec`, merged into `main` through PR #5 as merge commit `8717d6b`; the Pi-visible curated catalog expansion is commit `dbf3cf8`, merged into `main` through PR #6 as merge commit `2ea053b`.
-- **Current implementation:** The CLI/configuration skeleton, pure Anthropic/OpenAI translators, SSE state machine, authenticated aiohttp gateway, NVIDIA upstream client, Anthropic error conversion, timeout handling, cancellation handling, NVIDIA catalog parsing, bundled capability metadata, an atomic credential-free model cache, model commands, OS credential-store integration, the warned mode-0600 fallback, auth commands, the one-command Claude Code runner, doctor diagnostics, redacted metadata-only tracing, current-Claude compatibility coverage, and documented smoke tests are implemented.
-- **Next action:** Restart Claude Code to load the expanded 27-model picker.
+- **Current implementation:** The CLI/configuration skeleton, pure Anthropic/OpenAI translators, SSE state machine, authenticated aiohttp gateway, NVIDIA upstream client, Anthropic error conversion, timeout handling, cancellation handling, Pi model-list parsing, bundled model initialization/reset metadata, an atomic credential-free active model JSON, model commands, OS credential-store integration, the warned mode-0600 fallback, auth commands, the one-command Claude Code runner, doctor diagnostics, redacted metadata-only tracing, current-Claude compatibility coverage, and documented smoke tests are implemented.
+- **Next action:** Open and merge the pull request for `feature/pi-model-catalog-source`, then record the merge commit in this tracker.
 
 ## Implementation tracker
 
@@ -21,8 +21,9 @@ This table is the durable handoff state between sessions. Update it whenever a p
 | Phase 5 — Compatibility hardening and documentation | Complete | 137 default tests passed (5 live-Claude tests skipped); all 5 opt-in Claude Code 2.1.310 compatibility tests passed; Ruff, mypy, and `uv build` passed; commit `f6ae342` | Added metadata-only redacted tracing, a 2,000-delta long-stream test, opt-in installed-Claude coverage for text/tools/images/subagents/background agents, final README guidance, and documented offline/live smoke procedures. Hosted NVIDIA inference was not run because it requires explicit billable-request approval. |
 | Post-MVP refinement — Curated model picker | Complete | 138 default tests passed (5 live-Claude tests skipped); all 5 opt-in Claude Code compatibility tests passed; Ruff, mypy, and `uv build` passed; commit `ef609ec` | Claude Code discovery now advertises only bundled curated models present in the current catalog plus the explicitly selected model. The complete catalog remains cached and selectable through explicit configuration, and the stale Nemotron Nano alias was removed. |
 | Post-MVP refinement — Pi-visible curated catalog | Complete | 139 default tests passed (5 live-Claude tests skipped); all 5 opt-in Claude Code compatibility tests passed; Ruff, mypy, and `uv build` passed; credential-free cache refreshed to 85 models; commit `dbf3cf8`; merged as `2ea053b` | Adds all 22 NVIDIA models exposed by `pi --list-models nvidia` to the bundled curated catalog while retaining the five existing curated models that Pi does not expose. |
+| Post-MVP refinement — Pi-backed active model catalog | Complete (pending merge) | 144 default tests passed (5 live-Claude tests skipped); all 5 opt-in Claude Code compatibility tests passed; Ruff, mypy, and `uv build` passed; implementation commit pending | Replaces NVIDIA's official catalog integration with a bundled initialization/reset template plus a locally maintained active JSON that is synchronized from `pi --list-models nvidia` when available. Adds `models reset`, `run --refresh-models`, portable model-JSON help, legacy v1 archival, and removes `model_overrides` from `config.toml`. |
 
-**Current next action:** Restart Claude Code to load the expanded 27-model picker. All implementation decisions in section 19 are confirmed and binding.
+**Current next action:** Open and merge the pull request for `feature/pi-model-catalog-source`, then record the merge commit in this tracker. All implementation decisions in section 19 are confirmed and binding.
 
 ## 1. Goal
 
@@ -31,7 +32,7 @@ Build a small Python CLI that:
 1. Runs a loopback-only translator exposing the Anthropic Messages API expected by Claude Code.
 2. Translates Anthropic Messages requests, responses, tool calls, and SSE streams to/from NVIDIA NIM's OpenAI-compatible Chat Completions API.
 3. Starts the translator and Claude Code together in a chosen project directory with one command.
-4. Provides NVIDIA model refresh commands and secure CLI-managed credential storage.
+4. Provides an active NVIDIA model list with optional Pi synchronization and secure CLI-managed credential storage.
 5. Avoids LiteLLM and general-purpose provider/router abstractions.
 
 Distribution name: package `claude-nim-proxy`, executable `claude-nim`.
@@ -81,14 +82,15 @@ The translator strips `anthropic-nim/` before calling NVIDIA. Explicit raw NVIDI
 - Hosted NIM base URL: `https://integrate.api.nvidia.com/v1`.
 - Hosted authentication: `Authorization: Bearer $NVIDIA_API_KEY`.
 - Hosted inference: `POST /v1/chat/completions`.
-- Model catalog: `GET /v1/models`, returning OpenAI-style `{ "object": "list", "data": [...] }`.
 - Tool calling is model- and backend-dependent. Claude Code is not useful without reliable tool calling.
 - The hosted NVIDIA endpoint was checked during planning and exposes Chat Completions but returns 404 for `/v1/messages`, so a translator is needed for that target.
 - This project targets hosted NVIDIA NIM only. Self-hosted/local NIM deployment and the native Anthropic-compatible endpoint found in some local NIM releases are explicitly out of scope.
 
 ### Model catalog and credential ownership
 
-NVIDIA's `/v1/models` endpoint is the authoritative source of model IDs and can be queried without a credential. It is a global catalog rather than a per-account entitlement list: it does not indicate which models are free, which are paid, or which a particular key may call. The proxy will present catalog discovery separately from account availability.
+The active model list is a local, credential-free JSON file. It is initialized from a bundled template and can be replaced by the NVIDIA provider list exposed through `pi --list-models nvidia`. When Pi cannot provide a valid non-empty list, users maintain the active JSON manually. The proxy does not query NVIDIA's official `/v1/models` catalog.
+
+Pi list membership is independent of account entitlement: it does not indicate which models are free, paid, or callable by a particular NVIDIA key. The proxy presents model discovery separately from account availability.
 
 The CLI will own the complete NVIDIA credential lifecycle: secure prompt, validation, storage, status, replacement, and removal. No external agent or credential helper is required.
 
@@ -103,7 +105,7 @@ The CLI will own the complete NVIDIA credential lifecycle: secure prompt, valida
 - Claude model alias/fallback handling.
 - Claude-compatible model discovery.
 - One-command proxy plus Claude Code launcher.
-- NVIDIA model cache/refresh commands and secure CLI-managed credential storage.
+- Active model-list maintenance commands and secure CLI-managed credential storage.
 - Hosted NVIDIA NIM as the production upstream. The base URL remains configurable for automated fake-upstream tests, but alternate providers and local model deployment are not product goals.
 - Clear diagnostics for missing Claude Code, missing credentials, unsupported models, and failed upstream calls.
 
@@ -128,6 +130,7 @@ claude-nim auth verify [OPTIONS]
 claude-nim auth logout [OPTIONS]
 claude-nim models list [OPTIONS]
 claude-nim models update [OPTIONS]
+claude-nim models reset [OPTIONS]
 claude-nim doctor [OPTIONS]
 ```
 
@@ -160,8 +163,9 @@ claude-nim run . --model nvidia/nemotron-3-super-120b-a12b -- --resume
 | `auth status` | Report whether a credential is configured and where it came from without revealing the key. |
 | `auth verify` | Validate the credential with an explicit, potentially billable minimal NVIDIA request. |
 | `auth logout` | Remove the credential from the OS credential store without changing an environment-provided key. |
-| `models list` | Show cached/refreshed NVIDIA models and their local Claude aliases. |
-| `models update` | Refresh model IDs directly from NVIDIA and merge them with curated capability metadata. |
+| `models list` | Show the active NVIDIA models and their local Claude aliases. |
+| `models update` | Replace the active model JSON with a valid non-empty result from `pi --list-models nvidia`. |
+| `models reset` | Restore the bundled initialization/reset template into the active model JSON. |
 | `doctor` | Check Claude Code, credential resolution, upstream reachability, model availability, and loopback port readiness. |
 
 ## 5. One-command startup flow
@@ -174,7 +178,7 @@ claude-nim run . --model nvidia/nemotron-3-super-120b-a12b -- --resume
    - `NVIDIA_MODEL` environment variable;
    - user config `default_model`.
 
-   The proxy must not guess a model from the cached catalog. If none of these sources resolves a model, stop with a concise error listing cached tool-capable candidates and explain how to select one with `--model`, `NVIDIA_MODEL`, or `default_model`.
+   The proxy must not guess a model from the active list. If none of these sources resolves a model, stop with a concise error listing active tool-capable candidates and explain how to select one with `--model`, `NVIDIA_MODEL`, or `default_model`.
 3. Resolve the upstream base URL:
    - `--upstream-base-url`;
    - `NVIDIA_BASE_URL` environment variable;
@@ -193,6 +197,8 @@ claude-nim run . --model nvidia/nemotron-3-super-120b-a12b -- --resume
 6. Wait for the local health check to succeed.
 7. Build a child environment and an ephemeral settings file for Claude Code, then start `claude` with `cwd=PROJECT_DIR`, attached to the parent's terminal.
 8. Forward interrupt/termination signals to Claude Code, then shut down the translator, delete the ephemeral settings file, and return Claude Code's exit status. The proxy must not be left orphaned.
+
+When `--refresh-models` is supplied, the command attempts one Pi model-list synchronization before resolving the selected model. A valid non-empty Pi result replaces the active JSON; failure warns and continues with the existing active JSON. Ordinary runs do not invoke Pi.
 
 The translator should run in the CLI process for the `run` command unless testing demonstrates that a separate server process gives materially better secret isolation or signal handling.
 
@@ -512,61 +518,69 @@ The proxy will not blindly retry billable generation requests. It will preserve 
 
 For known unsupported Anthropic fields, the proxy will proactively remove or translate the field. This is more reliable than relying on Claude Code to recognize an upstream error string that has already changed protocols.
 
-## 11. Model refresh
+## 11. Active model list
 
 ### `claude-nim models update`
 
 The command will:
 
-1. Query the configured NVIDIA base URL's `GET /v1/models`. This endpoint is public, so catalog refresh does not require a stored credential.
-2. Parse the OpenAI-style `data[].id` list and retain the raw NVIDIA IDs as the authoritative catalog.
-3. Merge those IDs with a small bundled, curated capability catalog containing context size, maximum output, reasoning support, image support, and known tool-calling support. New or unknown NVIDIA models remain selectable with conservative defaults and an "unknown capabilities" marker.
-4. Write the proxy's cache atomically, without storing credentials.
-5. Report counts, additions/removals relative to the previous cache, and any IDs whose curated metadata is missing.
+1. Ensure the active model JSON exists, initializing it from the bundled template when absent.
+2. Run `pi --list-models nvidia` with a fixed argument list, no shell, a bounded timeout, and no inherited `NVIDIA_API_KEY`.
+3. Parse the human-readable Pi table and require a valid non-empty NVIDIA model list.
+4. Replace the active JSON atomically with exactly the Pi model IDs and Pi-derived capability metadata. No bundled models are merged back in.
+5. Report additions, removals, and unchanged IDs relative to the previous active list.
 
-The NVIDIA endpoint exposes IDs but not capability metadata or per-account entitlements. Capability metadata will therefore be a bundled/generated data file maintained from NVIDIA's supported-model documentation and model cards, with user-config overrides for exceptions. The model catalog depends only on NVIDIA and local curated metadata.
+If Pi is missing, exits unsuccessfully, times out, or returns empty/malformed output, the command preserves the active JSON and reports that it can be maintained manually. A valid active list is never replaced by an empty result.
 
-The model cache lives outside the project at:
+### `claude-nim models list` and `claude-nim models reset`
+
+`models list` validates and displays the active model JSON. `models reset` replaces it atomically with the bundled template. Every model-command help page shows these portable paths:
+
+```text
+~/.config/claude-nim/models.json
+src/claude_nim_proxy/data/nvidia_models.json
+```
+
+The active model JSON lives outside the project at:
 
 ```text
 ~/.config/claude-nim/models.json
 ```
 
-Cache schema:
+Active JSON schema:
 
 ```json
 {
-  "version": 1,
-  "updated_at": "2026-10-24T16:18:00Z",
-  "upstream_base_url": "https://integrate.api.nvidia.com/v1",
+  "version": 2,
+  "source": "pi",
+  "updated_at": "2026-10-25T12:00:00Z",
   "models": [
     {
-      "upstream_id": "nvidia/nemotron-3-super-120b-a12b",
-      "gateway_id": "anthropic-nim/nvidia/nemotron-3-super-120b-a12b",
-      "display_name": "NVIDIA Nemotron 3 Super 120B A12B (NIM)",
-      "context_window": 1048576,
-      "max_output_tokens": 32768,
+      "upstream_id": "nvidia/nemotron-3.5-lightning-30b-a3b",
+      "display_name": "nemotron-3.5-lightning-30b-a3b (NIM)",
+      "context_window": 261120,
+      "max_output_tokens": 261120,
       "reasoning": true,
       "input": ["text"],
-      "tool_calling": true,
+      "tool_calling": null,
       "source": ["nvidia"],
-      "metadata_source": "bundled"
+      "metadata_source": "pi"
     }
   ]
 }
 ```
 
-The bundled file `src/claude_nim_proxy/data/nvidia_models.json` uses the same model-object shape and a top-level `version`/`models` structure, but does not contain `updated_at`, `upstream_base_url`, or user overrides. `gateway_id` is derived from `upstream_id` rather than duplicated in the bundled source data. The cache may store the derived value for convenient inspection.
+The active JSON lives outside the project at `~/.config/claude-nim/models.json` and is written atomically with mode `0600`. It never contains credentials. `gateway_id` is derived from `upstream_id` rather than stored as a second source of truth.
 
-The curated overlay contains 27 models: all 22 NVIDIA models exposed by `pi --list-models nvidia`, plus the five existing curated NVIDIA models that Pi does not expose (Mistral Large 2, Mixtral 8x22B, Nemotron 3 Super, Nemotron 3.5 Bolt, and Nemotron Nano 3). Capability values for the original curated entries are taken from NVIDIA's model cards and NIM API reference. Context, output, reasoning, and image capability values for the nine newly added Pi-visible models come from the same Pi model registry used by `pi --list-models nvidia`. Pi does not publish tool-calling capability, so `tool_calling` remains unset for those additions and is resolved as unknown rather than guessed.
+The bundled file `src/claude_nim_proxy/data/nvidia_models.json` is only the initialization and reset template. It is synchronized with the current Pi NVIDIA list and is not consulted as a second runtime source once the active JSON exists. Users without Pi may edit the active JSON manually and set its top-level `source` to `manual`.
 
-`reasoning` and `tool_calling` are tri-state: `true`, `false`, or `null` for unknown. The `input` list contains supported modalities (`"text"` and optionally `"image"`). `metadata_source` is one of `bundled`, `user`, or `unknown`.
+Pi exposes context, maximum output, reasoning, and image capabilities but not tool-calling support. Rounded token counts are converted conservatively downward. `tool_calling` therefore remains `null` for Pi-sourced models unless the user edits the active JSON. `reasoning` and `tool_calling` are tri-state: `true`, `false`, or `null` for unknown. The `input` list contains supported modalities (`"text"` and optionally `"image"`). `metadata_source` is one of `bundled`, `pi`, `manual`, or `unknown`.
 
-A model absent from the bundled capability catalog remains selectable and receives conservative runtime defaults: `context_window = 32768`, `max_output_tokens = 4096`, `reasoning = null`, `tool_calling = null`, and `input = ["text"]`. Unknown tool-calling support is allowed on a best-effort basis because rejecting it would make an otherwise functional NIM model unusable with Claude Code; unknown image support is rejected locally with a clear capability error. A user override can replace any of these values.
+A model absent from the active JSON remains selectable and receives conservative runtime defaults: `context_window = 32768`, `max_output_tokens = 4096`, `reasoning = null`, `tool_calling = null`, and `input = ["text"]`. Unknown tool-calling support is allowed on a best-effort basis because rejecting it would make an otherwise functional NIM model unusable with Claude Code; unknown image support is rejected locally with a clear capability error.
 
-The credential-free cache retains the complete authoritative NVIDIA catalog. Claude Code's `/model` discovery endpoint is intentionally narrower: it advertises bundled curated models that are present in the current catalog, plus the explicitly selected model even when that model lacks curated metadata. Uncatalogued or non-curated models remain directly selectable through `--model`, `NVIDIA_MODEL`, or `default_model`.
+Claude Code's `/model` discovery endpoint advertises every model in the active JSON plus the explicitly selected model. Models outside the active list remain directly selectable through `--model`, `NVIDIA_MODEL`, or `default_model`.
 
-A model's presence in `/v1/models` does not guarantee that every NVIDIA key is entitled to call it. `doctor` and `auth verify` must distinguish catalog discovery from actual account entitlement and report a 404 from NVIDIA as an entitlement/model-availability problem.
+Pi list membership does not guarantee that every NVIDIA key is entitled to call a model. `doctor` and `auth verify` distinguish discovery from actual account availability and report a 404 as a model availability/entitlement problem.
 
 ## 12. Credential management
 
@@ -594,7 +608,7 @@ There will be no recommended `--api-key` command-line option because command-lin
 
 ### Storage
 
-The preferred backend is the Python `keyring` package, which uses Secret Service/KWallet on Linux, Keychain on macOS, and Credential Manager on Windows. If no OS backend is available, the CLI falls back to `~/.config/claude-nim/credentials.json` with mode `0600`, clearly warns that the unencrypted secret is stored on disk, and offers to remove it. The API key will never be written to `config.toml`, the model cache, project files, logs, or Claude Code's child environment.
+The preferred backend is the Python `keyring` package, which uses Secret Service/KWallet on Linux, Keychain on macOS, and Credential Manager on Windows. If no OS backend is available, the CLI falls back to `~/.config/claude-nim/credentials.json` with mode `0600`, clearly warns that the unencrypted secret is stored on disk, and offers to remove it. The API key will never be written to `config.toml`, the active model JSON, project files, logs, or Claude Code's child environment.
 
 ## 13. Configuration
 
@@ -606,13 +620,13 @@ The user config path is:
 ~/.config/claude-nim/config.toml
 ```
 
-A missing config file is valid and means that all values use their defaults. The CLI parses the file with Python's standard-library `tomllib` and validates it against the schema below. Unknown top-level keys, unknown per-model keys, invalid value types, and invalid enum values are configuration errors with the offending key named; silently ignoring them would hide configuration mistakes.
+A missing config file is valid and means that all values use their defaults. The CLI never creates `config.toml` automatically. It parses the file with Python's standard-library `tomllib` and validates it against the schema below. Unknown top-level keys, invalid value types, and invalid enum values are configuration errors with the offending key named; silently ignoring them would hide configuration mistakes.
 
 A complete example is:
 
 ```toml
-default_model = "nvidia/nemotron-3-super-120b-a12b"
-verify_model = "nvidia/nemotron-3-super-120b-a12b"
+default_model = "nvidia/nemotron-3.5-lightning-30b-a3b"
+verify_model = "nvidia/nemotron-3.5-lightning-30b-a3b"
 upstream_base_url = "https://integrate.api.nvidia.com/v1"
 upstream_auth = "auto"
 listen_host = "127.0.0.1"
@@ -623,14 +637,6 @@ disable_experimental_betas = true
 upstream_connect_timeout_seconds = 10
 upstream_read_timeout_seconds = 600
 debug = false
-
-[model_overrides."nvidia/nemotron-3-super-120b-a12b"]
-display_name = "NVIDIA Nemotron 3 Super 120B A12B (NIM)"
-context_window = 131072
-max_output_tokens = 32768
-reasoning = true
-input = ["text", "image"]
-tool_calling = true
 ```
 
 The supported top-level keys are:
@@ -643,26 +649,14 @@ The supported top-level keys are:
 | `upstream_auth` | string enum | `auto` | Upstream credential policy: `auto`, `required`, or `none` as defined below. |
 | `listen_host` | string | `127.0.0.1` | Local bind address. A non-loopback value is rejected unless explicitly allowed. |
 | `listen_port` | integer | `0` | `0` selects an ephemeral port. |
-| `context_window` | integer | `32768` | Global fallback context size when a selected model has no curated or per-model override. |
-| `max_output_tokens` | integer | `4096` | Global fallback output limit when a selected model has no curated or per-model override. |
+| `context_window` | integer | `32768` | Global fallback context size when a selected model has no active-list metadata. |
+| `max_output_tokens` | integer | `4096` | Global fallback output limit when a selected model has no active-list metadata. |
 | `disable_experimental_betas` | boolean | `true` | Default value for `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS` in the Claude Code child. |
 | `upstream_connect_timeout_seconds` | number | `10` | Upstream connection timeout. |
 | `upstream_read_timeout_seconds` | number | `600` | Upstream response/read timeout, including streamed generation. |
 | `debug` | boolean | `false` | Enable redacted diagnostic logging. |
-| `model_overrides` | table | empty | Per-NVIDIA-model capability overrides keyed by the raw upstream model ID. |
 
-A per-model override accepts exactly these keys:
-
-| Key | Type | Meaning |
-|---|---|---|
-| `display_name` | string | Human-readable name shown by `models list` and Claude Code discovery. |
-| `context_window` | positive integer | Context window in tokens. |
-| `max_output_tokens` | positive integer | Maximum output in tokens. |
-| `reasoning` | boolean or `null` | Whether the model supports reasoning; `null` means unknown. |
-| `input` | array of strings | Supported input modalities; only `"text"` and `"image"` are valid. |
-| `tool_calling` | boolean or `null` | Whether the model reliably supports tool calls; `null` means unknown/best-effort. |
-
-Capability precedence is: user per-model override, bundled per-model metadata, global config fallback, then conservative unknown-model defaults. `models update` may refresh IDs and bundled metadata but must never overwrite user configuration.
+Capability precedence is: active model-JSON metadata, global config fallback, then conservative unknown-model defaults. Model IDs and capabilities are not configured in `config.toml`; manual model maintenance belongs in the active model JSON.
 
 `upstream_auth` has these exact meanings:
 
@@ -708,7 +702,7 @@ If `--model`, `NVIDIA_MODEL`, and `default_model` are all absent, the CLI must f
 
 - Bind to `127.0.0.1` by default.
 - Generate a random local bearer token per run and validate `Authorization: Bearer <token>` on credentialed Claude-facing endpoints.
-- Resolve the NVIDIA credential from the environment or OS credential store into proxy memory only. The persistent copy may exist only in the OS credential store, or in the mode-`0600` fallback file after an explicit warning; never place it in command-line arguments, logs, the model cache, project files, or Claude Code's child environment.
+- Resolve the NVIDIA credential from the environment or OS credential store into proxy memory only. The persistent copy may exist only in the OS credential store, or in the mode-`0600` fallback file after an explicit warning; never place it in command-line arguments, logs, the active model JSON, project files, or Claude Code's child environment.
 - Redact `Authorization`, `x-api-key`, and configured secrets from all debug output.
 - Do not log prompts, tool schemas, message bodies, or responses by default.
 - Never include the NVIDIA key in redirected upstream URLs or exception text.
@@ -728,6 +722,7 @@ src/claude_nim_proxy/
   config.py
   credentials.py
   models.py
+  pi_models.py
   runner.py
   server.py
   upstream.py
@@ -748,6 +743,7 @@ tests/
   test_cli.py
   test_credentials.py
   test_model_sync.py
+  test_pi_models.py
 ```
 
 ### Runtime dependencies
@@ -820,16 +816,17 @@ Use a fake `claude` executable and a mocked credential-store backend to verify:
 - Environment, credential-store, interactive-prompt, and missing-credential resolution paths.
 - `auto`, `required`, and `none` upstream authentication modes, including credential-free fake-upstream tests.
 - `auth login`, `auth status`, `auth verify`, and `auth logout` behavior without revealing secrets.
-- Model cache atomic update and no secret persistence.
+- Active model-JSON initialization, Pi replacement, reset, legacy archive, invalid-JSON rejection, and no secret persistence.
+- Pi model-table parsing, empty/malformed/duplicate rejection, timeout handling, and `NVIDIA_API_KEY` removal from the subprocess environment.
 - `serve` token sources (`--token-stdin`, `--token-file`, and generated-token output) without accepting a token in command-line arguments.
 - No implicit model selection when `--model`, `NVIDIA_MODEL`, and `default_model` are absent.
 
 ### Configuration tests
 
-- Valid TOML parsing and rejection of unknown keys, invalid types, invalid enum values, and invalid per-model override fields.
+- Valid TOML parsing and rejection of unknown keys, invalid types, and invalid enum values.
 - Strict CLI → environment → config → default precedence for every supported setting.
-- Capability precedence across per-model overrides, bundled metadata, global fallback, and conservative unknown-model defaults.
-- Atomic writes for the model cache and user config when the CLI creates or updates them.
+- Capability precedence across active model-JSON metadata, global fallback, and conservative unknown-model defaults.
+- Atomic writes for the active model JSON when the CLI initializes, refreshes, or resets it.
 
 ### Real smoke tests
 
@@ -863,8 +860,8 @@ Agents follow `AGENTS.md` and work in tracker order. A phase should normally fit
 
 ### Phase 3 — Model discovery and NVIDIA catalog refresh
 
-- Implement NVIDIA model parsing, reversible gateway aliases, bundled capability metadata, cache storage, `models list`, and `models update`.
-- Verify Claude Code discovery behavior with real `anthropic-nim/...` IDs.
+- Implement the initial NVIDIA catalog refresh, reversible gateway aliases, bundled capability metadata, cache storage, `models list`, and `models update`.
+- The later Pi-backed active-catalog refinement supersedes the official NVIDIA catalog client while retaining reversible aliases and discovery behavior.
 
 ### Phase 4 — Credential management and one-command runner
 
@@ -887,15 +884,15 @@ The MVP is complete when:
 - Text responses stream incrementally with a valid Anthropic event sequence.
 - Claude Code can call a local tool and complete the tool-result round trip.
 - Built-in model aliases, subagents, and background requests resolve to the selected NVIDIA model.
-- Curated NVIDIA models present in the current catalog are selectable through `/model` using `anthropic-nim/...` discovery IDs; the explicitly selected model is always included.
-- `claude-nim models update` refreshes model IDs directly from NVIDIA, works without a stored credential, and never persists one in the model cache.
+- Active NVIDIA models are selectable through `/model` using `anthropic-nim/...` discovery IDs; the explicitly selected model is always included.
+- `claude-nim models update` replaces the active model JSON with a valid non-empty `pi --list-models nvidia` result, preserves the active JSON on failure, and never persists a credential.
 - `claude-nim auth login` securely prompts for and stores the NVIDIA key; `auth status` never reveals it; `auth logout` removes the stored copy.
 - The NVIDIA key is not present in the Claude Code child environment, logs, cache, or process arguments.
 - The proxy shuts down cleanly when Claude Code exits or receives an interrupt.
 - The test suite passes without a live NVIDIA account; live NVIDIA and Claude Code smoke tests are documented separately.
 - The local gateway emits the exact Anthropic response, SSE, and error envelopes specified in section 7.1.
 - The Claude Code child is launched with the exact temporary settings shape and command-line contract specified in section 7.1, with no NVIDIA credential inherited.
-- Configuration precedence and capability overrides follow section 13 exactly, and an unspecified model is never selected implicitly.
+- Configuration precedence and active-catalog capability resolution follow section 13 exactly, and an unspecified model is never selected implicitly.
 - The implementation tracker records the final validation evidence and completed-phase commit.
 
 ## 19. Confirmed implementation decisions
@@ -909,8 +906,13 @@ All decisions below are confirmed by the user and are binding for implementation
 5. **Experimental Anthropic betas:** disable them by default in the Claude Code child, with an explicit override for testing.
 6. **Native NIM Anthropic endpoint:** not applicable and out of scope. The project will not implement native Anthropic passthrough or a local-NIM bypass.
 7. **Credential storage:** prefer the OS credential store through `keyring`; use a mode-`0600` file only as an explicitly warned, unencrypted fallback.
-8. **Model picker scope:** Claude Code discovery advertises only bundled curated models present in the current NVIDIA catalog, plus the explicitly selected model. The complete catalog remains in the local cache, and non-curated models remain selectable through explicit model configuration.
-9. **Pi-visible curated models:** The bundled curated catalog must include every NVIDIA model exposed by `pi --list-models nvidia`. Existing curated models not exposed by Pi remain included. Pi-provided capability metadata may fill context, output, reasoning, and image fields, while unprovided tool-calling support remains unknown.
+8. **Active model source:** `~/.config/claude-nim/models.json` is the runtime source of truth for model IDs and capabilities. The bundled `nvidia_models.json` is only its initialization and reset template and is never merged into an active Pi result.
+9. **Pi replacement semantics:** Pi exists only when `pi --list-models nvidia` succeeds and returns a valid non-empty NVIDIA list. A successful result replaces the active model JSON completely, so a smaller Pi list removes old models. Failure or empty output preserves the active JSON.
+10. **Manual model maintenance:** Users without a working Pi command maintain `~/.config/claude-nim/models.json` manually and may set its top-level source to `manual`. Invalid manual JSON is reported and not silently overwritten.
+11. **Run refresh:** `claude-nim run --refresh-models` attempts one Pi synchronization before startup. Failure warns and continues with the existing active JSON; ordinary runs do not invoke Pi.
+12. **Portable help:** Model-maintenance help shows `~/.config/claude-nim/models.json` and `src/claude_nim_proxy/data/nvidia_models.json`, never machine-specific absolute paths.
+13. **Official catalog removal:** The proxy does not query NVIDIA's official `/v1/models` endpoint. `doctor` determines availability through its minimal authenticated request only.
+14. **Configuration scope:** `config.toml` is optional, never auto-created, and contains general proxy settings only. Per-model capability overrides are removed; model maintenance belongs in the active JSON.
 
 ## 20. Sources
 

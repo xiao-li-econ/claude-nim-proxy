@@ -1,46 +1,31 @@
 from __future__ import annotations
 
-import asyncio
 import json
-import os
 import stat
 from pathlib import Path
-from typing import Any
 
 import aiohttp
 import pytest
-import pytest_asyncio
-from aiohttp import web
 
 from claude_nim_proxy.cli import _gateway_settings, main
 from claude_nim_proxy.config import load_config
 from claude_nim_proxy.models import (
-    ModelCache,
     ModelCacheError,
+    ModelCatalog,
+    ModelMetadata,
     compare_catalog_ids,
     default_model_cache_path,
-    gateway_alias,
+    ensure_model_catalog,
     load_bundled_model_metadata,
-    load_model_cache,
-    merge_model_metadata,
+    load_model_catalog,
     normalize_upstream_model_id,
-    parse_nvidia_model_catalog,
+    reset_model_catalog,
+    resolve_model_catalog,
     resolve_model_metadata,
-    save_model_cache,
+    save_model_catalog,
 )
+from claude_nim_proxy.pi_models import PiModel, PiModelListError
 from claude_nim_proxy.server import GatewayServer
-
-CURATED_AGENTIC_MODEL_IDS = (
-    "deepseek-ai/deepseek-v4.1-flash",
-    "minimaxai/minimax-m3.1-flash",
-    "moonshotai/kimi-k2.6",
-    "nvidia/nemotron-3-super-120b-a12b",
-    "nvidia/nemotron-3-ultra-550b-a55b",
-    "nvidia/nemotron-3.5-super-vl-120b-a12b",
-    "openai/gpt-oss-20b",
-    "stepfun-ai/step-5-preview",
-    "z-ai/glm-5.3",
-)
 
 PI_VISIBLE_NVIDIA_MODEL_IDS = (
     "deepseek-ai/deepseek-v4.1-flash",
@@ -69,130 +54,21 @@ PI_VISIBLE_NVIDIA_MODEL_IDS = (
 
 
 def test_gateway_alias_is_reversible() -> None:
-    alias = gateway_alias("nvidia/nemotron-3-super-120b-a12b")
+    alias = "anthropic-nim/nvidia/nemotron-3.5-lightning-30b-a3b"
 
-    assert alias == "anthropic-nim/nvidia/nemotron-3-super-120b-a12b"
-    assert normalize_upstream_model_id(alias) == "nvidia/nemotron-3-super-120b-a12b"
-
-
-def test_catalog_parser_keeps_authoritative_ids_and_removes_duplicates() -> None:
-    payload = {
-        "object": "list",
-        "data": [
-            {"id": "nvidia/model-b"},
-            {"id": "nvidia/model-a"},
-            {"id": "nvidia/model-b"},
-        ],
-    }
-
-    assert parse_nvidia_model_catalog(payload) == ("nvidia/model-a", "nvidia/model-b")
+    assert alias == "anthropic-nim/nvidia/nemotron-3.5-lightning-30b-a3b"
+    assert normalize_upstream_model_id(alias) == "nvidia/nemotron-3.5-lightning-30b-a3b"
 
 
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {},
-        {"data": {}},
-        {"data": [{"object": "model"}]},
-        {"data": [{"id": ""}]},
-    ],
-)
-def test_malformed_catalog_is_rejected(payload: dict[str, Any]) -> None:
-    with pytest.raises(ValueError):
-        parse_nvidia_model_catalog(payload)
+def test_bundled_metadata_exactly_matches_current_pi_nvidia_list() -> None:
+    bundled = load_bundled_model_metadata()
 
-
-def test_bundled_metadata_provides_curated_capabilities(tmp_path: Path) -> None:
-    config = load_config(tmp_path / "missing.toml", environ={})
-
-    model = resolve_model_metadata("nvidia/nemotron-3-super-120b-a12b", config)
-
-    assert model.display_name == "NVIDIA Nemotron 3 Super 120B A12B (NIM)"
-    assert model.context_window == 1_048_576
-    assert model.max_output_tokens == 32_768
-    assert model.reasoning is True
-    assert model.tool_calling is True
-    assert model.input == ("text",)
-    assert model.metadata_source == "bundled"
-
-
-def test_unknown_model_uses_global_and_conservative_fallbacks(tmp_path: Path) -> None:
-    config_path = tmp_path / "config.toml"
-    config_path.write_text(
-        """
-context_window = 12345
-max_output_tokens = 6789
-""",
-        encoding="utf-8",
-    )
-    config = load_config(config_path, environ={})
-
-    model = resolve_model_metadata("vendor/unknown", config)
-
-    assert model.context_window == 12345
-    assert model.max_output_tokens == 6789
-    assert model.reasoning is None
-    assert model.tool_calling is None
-    assert model.input == ("text",)
-    assert model.metadata_source == "unknown"
-
-
-def test_user_override_has_highest_capability_precedence(tmp_path: Path) -> None:
-    config_path = tmp_path / "config.toml"
-    config_path.write_text(
-        """
-context_window = 12345
-max_output_tokens = 6789
-
-[model_overrides."nvidia/nemotron-3-super-120b-a12b"]
-display_name = "My NVIDIA model"
-context_window = 200000
-reasoning = false
-input = ["text", "image"]
-tool_calling = false
-""",
-        encoding="utf-8",
-    )
-    config = load_config(config_path, environ={})
-
-    model = resolve_model_metadata("nvidia/nemotron-3-super-120b-a12b", config)
-
-    assert model.display_name == "My NVIDIA model"
-    assert model.context_window == 200_000
-    assert model.max_output_tokens == 32_768
-    assert model.reasoning is False
-    assert model.tool_calling is False
-    assert model.input == ("text", "image")
-    assert model.metadata_source == "user"
-
-
-def test_cache_round_trip_is_atomic_and_credential_free(tmp_path: Path) -> None:
-    config = load_config(tmp_path / "missing.toml", environ={})
-    models = merge_model_metadata(["nvidia/model", "vendor/unknown"], config)
-    cache = ModelCache(
-        updated_at="2026-10-24T16:18:00Z",
-        upstream_base_url="https://integrate.api.nvidia.com/v1",
-        models=models,
-    )
-    path = tmp_path / "cache" / "models.json"
-
-    save_model_cache(cache, path)
-
-    loaded = load_model_cache(path)
-    assert loaded == cache
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
-    raw = path.read_text(encoding="utf-8")
-    assert "NVIDIA_API_KEY" not in raw
-    assert "authorization" not in raw.lower()
-    assert not list(path.parent.glob("*.tmp"))
-
-
-def test_invalid_cache_is_rejected(tmp_path: Path) -> None:
-    path = tmp_path / "models.json"
-    path.write_text('{"version": 99, "models": []}', encoding="utf-8")
-
-    with pytest.raises(ModelCacheError, match="unsupported version"):
-        load_model_cache(path)
+    assert set(bundled) == set(PI_VISIBLE_NVIDIA_MODEL_IDS)
+    assert bundled["nvidia/nemotron-3.5-lightning-30b-a3b"].tool_calling is None
+    assert bundled["google/diffusiongemma-26b-a4b-it"].context_window == 250_000
+    assert bundled["google/diffusiongemma-26b-a4b-it"].input == ("text", "image")
+    assert "nvidia/nemotron-3-super-120b-a12b" not in bundled
+    assert "nvidia/nemotron-nano-3-30b-a3b" not in bundled
 
 
 def test_catalog_diff_reports_additions_and_removals() -> None:
@@ -206,91 +82,133 @@ def test_catalog_diff_reports_additions_and_removals() -> None:
     assert difference.unchanged == ("nvidia/same",)
 
 
-def test_default_cache_path_uses_xdg_config_home(tmp_path: Path, monkeypatch) -> None:
+def test_default_catalog_path_uses_xdg_config_home(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
 
     assert default_model_cache_path() == tmp_path / "claude-nim" / "models.json"
 
 
-def test_bundled_metadata_file_is_valid() -> None:
-    bundled = load_bundled_model_metadata()
+def test_active_catalog_is_initialized_from_bundled_template(tmp_path: Path) -> None:
+    path = tmp_path / "models.json"
 
-    assert "nvidia/nemotron-3-super-120b-a12b" in bundled
-    assert bundled["nvidia/nemotron-3-super-120b-a12b"].tool_calling is True
-    assert "nvidia/nemotron-nano-3-30b-a3b" in bundled
-    assert "nvidia/nemotron-3-nano-30b-a3b" not in bundled
+    catalog = ensure_model_catalog(path)
 
-
-def test_bundled_metadata_covers_pi_visible_nvidia_models() -> None:
-    bundled = load_bundled_model_metadata()
-
-    assert set(PI_VISIBLE_NVIDIA_MODEL_IDS) <= set(bundled)
-    assert bundled["google/diffusiongemma-26b-a4b-it"].context_window == 250_000
-    assert bundled["google/diffusiongemma-26b-a4b-it"].input == ("text", "image")
-    assert bundled["meta/muse-glimmer-30b"].max_output_tokens == 131_072
-    assert bundled["mistralai/mistral-7b-instruct-v0.3"].tool_calling is None
+    assert catalog.source == "bundled"
+    assert catalog.updated_at is None
+    assert set(model.upstream_id for model in catalog.models) == set(
+        PI_VISIBLE_NVIDIA_MODEL_IDS
+    )
+    assert path.exists()
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
-def test_bundled_metadata_covers_curated_agentic_models() -> None:
-    bundled = load_bundled_model_metadata()
+def test_legacy_nvidia_cache_is_archived_before_bundled_initialization(tmp_path: Path) -> None:
+    path = tmp_path / "models.json"
+    path.write_text('{"version": 1, "models": []}\n', encoding="utf-8")
 
-    assert set(CURATED_AGENTIC_MODEL_IDS) <= set(bundled)
-    for model_id in CURATED_AGENTIC_MODEL_IDS:
-        metadata = bundled[model_id]
-        assert metadata.tool_calling is True
-        assert metadata.reasoning is True
-        assert metadata.context_window is not None
-        assert metadata.context_window >= 128_000
+    catalog = ensure_model_catalog(path)
 
-
-def test_bundled_metadata_marks_image_capable_models() -> None:
-    bundled = load_bundled_model_metadata()
-
-    assert bundled["nvidia/nemotron-3.5-super-vl-120b-a12b"].input == ("text", "image")
-    assert bundled["moonshotai/kimi-k2.6"].input == ("text", "image")
-    assert bundled["nvidia/nemotron-3-super-120b-a12b"].input == ("text",)
+    assert catalog.source == "bundled"
+    assert path.exists()
+    assert (tmp_path / "models.json.nvidia-v1.bak").exists()
+    assert json.loads((tmp_path / "models.json.nvidia-v1.bak").read_text())["version"] == 1
 
 
-def test_unresolved_bundled_output_limit_falls_back_to_global_config(tmp_path: Path) -> None:
+def test_invalid_active_catalog_is_not_silently_overwritten(tmp_path: Path) -> None:
+    path = tmp_path / "models.json"
+    path.write_text("not json\n", encoding="utf-8")
+
+    with pytest.raises(ModelCacheError, match="invalid JSON"):
+        ensure_model_catalog(path)
+
+    assert path.read_text(encoding="utf-8") == "not json\n"
+
+
+def test_active_catalog_round_trip_is_atomic_and_credential_free(tmp_path: Path) -> None:
+    path = tmp_path / "catalog" / "models.json"
+    catalog = ModelCatalog(
+        source="manual",
+        updated_at="2026-10-25T12:00:00Z",
+        models=(
+            ModelMetadata(
+                upstream_id="nvidia/model",
+                display_name="Manual model",
+                context_window=32_768,
+                max_output_tokens=4_096,
+                reasoning=None,
+                input=("text",),
+                tool_calling=None,
+                metadata_source="manual",
+            ),
+        ),
+    )
+
+    save_model_catalog(catalog, path)
+
+    loaded = load_model_catalog(path)
+    assert loaded == catalog
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    raw = path.read_text(encoding="utf-8")
+    assert "NVIDIA_API_KEY" not in raw
+    assert "authorization" not in raw.lower()
+    assert not list(path.parent.glob("*.tmp"))
+
+
+def test_model_capabilities_resolve_from_active_catalog_with_global_fallback(
+    tmp_path: Path,
+) -> None:
     config_path = tmp_path / "config.toml"
-    config_path.write_text("max_output_tokens = 6789\n", encoding="utf-8")
+    config_path.write_text(
+        """
+context_window = 12345
+max_output_tokens = 6789
+""",
+        encoding="utf-8",
+    )
     config = load_config(config_path, environ={})
+    catalog = ModelCatalog(
+        source="manual",
+        updated_at=None,
+        models=(
+            ModelMetadata(
+                upstream_id="nvidia/model",
+                display_name=None,
+                context_window=None,
+                max_output_tokens=None,
+                reasoning=None,
+                input=None,
+                tool_calling=None,
+                metadata_source="manual",
+            ),
+        ),
+    )
 
-    model = resolve_model_metadata("z-ai/glm-5.3", config)
+    model = resolve_model_metadata("nvidia/model", config, catalog)
 
-    assert model.max_output_tokens == 6789
-    assert model.context_window == 1_048_576
-    assert model.metadata_source == "bundled"
+    assert model.display_name == "NVIDIA nvidia/model (NIM)"
+    assert model.context_window == 12_345
+    assert model.max_output_tokens == 6_789
+    assert model.reasoning is None
+    assert model.tool_calling is None
+    assert model.input == ("text",)
+    assert model.metadata_source == "manual"
 
 
-@pytest_asyncio.fixture
-async def catalog_server() -> tuple[str, list[dict[str, Any]], list[str]]:
-    app = web.Application()
-    requests: list[dict[str, Any]] = []
-    model_ids = ["nvidia/nemotron-3-super-120b-a12b", "vendor/unknown"]
+def test_selected_model_outside_active_catalog_uses_conservative_fallback(
+    tmp_path: Path,
+) -> None:
+    config = load_config(tmp_path / "missing.toml", environ={})
+    catalog = ModelCatalog(source="manual", updated_at=None, models=())
 
-    async def handle_models(request: web.Request) -> web.StreamResponse:
-        requests.append({"headers": dict(request.headers), "path": request.path})
-        return web.json_response(
-            {"object": "list", "data": [{"id": model_id} for model_id in model_ids]}
-        )
+    model = resolve_model_metadata("vendor/unknown", config, catalog)
 
-    app.router.add_get("/v1/models", handle_models)
-    runner = web.AppRunner(app, access_log=None)
-    await runner.setup()
-    site = web.TCPSite(runner, host="127.0.0.1", port=0)
-    await site.start()
-    addresses = runner.addresses
-    assert addresses
-    port = int(addresses[0][1])
-    try:
-        yield f"http://127.0.0.1:{port}/v1", requests, model_ids
-    finally:
-        await runner.cleanup()
+    assert model.context_window == 32_768
+    assert model.max_output_tokens == 4_096
+    assert model.metadata_source == "unknown"
 
 
 @pytest.mark.asyncio
-async def test_gateway_discovery_is_limited_to_curated_models_plus_selected_model(
+async def test_gateway_discovery_uses_active_catalog_plus_selected_model(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -301,22 +219,23 @@ async def test_gateway_discovery_is_limited_to_curated_models_plus_selected_mode
         encoding="utf-8",
     )
     config = load_config(config_path, environ={})
-    cache_models = merge_model_metadata(
-        (
-            "nvidia/nemotron-3-super-120b-a12b",
-            "vendor/selected-uncurated",
-            "vendor/unknown",
+    catalog = ModelCatalog(
+        source="manual",
+        updated_at=None,
+        models=(
+            ModelMetadata(
+                upstream_id="nvidia/active-model",
+                display_name="Active model",
+                context_window=32_768,
+                max_output_tokens=4_096,
+                reasoning=False,
+                input=("text",),
+                tool_calling=True,
+                metadata_source="manual",
+            ),
         ),
-        config,
     )
-    save_model_cache(
-        ModelCache(
-            updated_at="2026-10-24T16:18:00Z",
-            upstream_base_url=config.upstream_base_url,
-            models=cache_models,
-        ),
-        default_model_cache_path(),
-    )
+    save_model_catalog(catalog, default_model_cache_path())
 
     settings = _gateway_settings(
         config,
@@ -338,142 +257,181 @@ async def test_gateway_discovery_is_limited_to_curated_models_plus_selected_mode
 
     assert [entry["id"] for entry in payload["data"]] == [
         "anthropic-nim/vendor/selected-uncurated",
-        "anthropic-nim/nvidia/nemotron-3-super-120b-a12b",
+        "anthropic-nim/nvidia/active-model",
     ]
-    assert "anthropic-nim/vendor/unknown" not in {
-        entry["id"] for entry in payload["data"]
-    }
 
 
-@pytest.mark.asyncio
-async def test_models_update_is_public_atomic_and_reports_changes(
+def test_models_list_uses_bundled_template_without_prior_cache(
     tmp_path: Path,
     monkeypatch,
     capsys,
-    catalog_server: tuple[str, list[dict[str, Any]], list[str]],
 ) -> None:
-    base_url, requests, catalog_ids = catalog_server
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-must-not-be-persisted")
-    monkeypatch.setenv("NVIDIA_BASE_URL", "http://127.0.0.1:1/v1")
 
-    status = await asyncio.to_thread(
-        main,
-        [
-            "models",
-            "update",
-            "--upstream-base-url",
-            base_url,
-            "--json",
-        ],
-    )
-    output = capsys.readouterr().out
+    status = main(["models", "list", "--json"])
 
     assert status == 0
-    report = json.loads(output)
-    assert report["model_count"] == 2
-    assert report["added"] == [
-        "nvidia/nemotron-3-super-120b-a12b",
-        "vendor/unknown",
-    ]
-    assert report["missing_metadata"] == ["vendor/unknown"]
-    assert requests[0]["path"] == "/v1/models"
-    assert "Authorization" not in requests[0]["headers"]
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["source"] == "bundled"
+    assert payload["updated_at"] is None
+    assert len(payload["models"]) == len(PI_VISIBLE_NVIDIA_MODEL_IDS)
 
-    cache_path = tmp_path / "claude-nim" / "models.json"
-    cache_text = cache_path.read_text(encoding="utf-8")
-    assert "nvapi-must-not-be-persisted" not in cache_text
-    assert stat.S_IMODE(cache_path.stat().st_mode) == 0o600
-    cache = load_model_cache(cache_path)
-    assert cache is not None
-    assert [model.gateway_id for model in cache.models] == [
-        "anthropic-nim/nvidia/nemotron-3-super-120b-a12b",
-        "anthropic-nim/vendor/unknown",
-    ]
 
-    catalog_ids[:] = ["vendor/unknown", "vendor/new"]
-    second_status = await asyncio.to_thread(
-        main,
-        [
-            "models",
-            "update",
-            "--upstream-base-url",
-            base_url,
-            "--json",
-        ],
+def test_models_update_replaces_active_catalog_with_pi_list(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    path = default_model_cache_path()
+    save_model_catalog(
+        ModelCatalog(
+            source="manual",
+            updated_at=None,
+            models=(
+                ModelMetadata(
+                    upstream_id="vendor/old-model",
+                    display_name="Old model",
+                    context_window=32_768,
+                    max_output_tokens=4_096,
+                    reasoning=False,
+                    input=("text",),
+                    tool_calling=True,
+                    metadata_source="manual",
+                ),
+            ),
+        ),
+        path,
     )
-    second_output = capsys.readouterr().out
-    second_report = json.loads(second_output)
-
-    assert second_status == 0
-    assert second_report["added"] == ["vendor/new"]
-    assert second_report["removed"] == ["nvidia/nemotron-3-super-120b-a12b"]
-    assert second_report["unchanged"] == ["vendor/unknown"]
-
-
-@pytest.mark.asyncio
-async def test_models_list_shows_gateway_aliases(
-    tmp_path: Path,
-    monkeypatch,
-    capsys,
-    catalog_server: tuple[str, list[dict[str, Any]], list[str]],
-) -> None:
-    base_url, _, _ = catalog_server
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    update_status = await asyncio.to_thread(
-        main,
-        ["models", "update", "--upstream-base-url", base_url],
+    pi_models = (
+        PiModel(
+            upstream_id="nvidia/new-model",
+            display_name="new-model (NIM)",
+            context_window=131_072,
+            max_output_tokens=16_384,
+            reasoning=True,
+            input=("text", "image"),
+        ),
     )
-    capsys.readouterr()
+    monkeypatch.setattr("claude_nim_proxy.cli.run_pi_model_list", lambda: pi_models)
 
-    list_status = await asyncio.to_thread(main, ["models", "list", "--json"])
-    output = capsys.readouterr().out
+    status = main(["models", "update", "--json"])
 
-    assert update_status == 0
-    assert list_status == 0
-    payload = json.loads(output)
-    assert payload["models"][0]["gateway_id"] == ("anthropic-nim/nvidia/nemotron-3-super-120b-a12b")
-    assert payload["models"][0]["metadata_source"] == "bundled"
-    assert payload["models"][1]["metadata_source"] == "unknown"
+    assert status == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["source"] == "pi"
+    assert payload["added"] == ["nvidia/new-model"]
+    assert payload["removed"] == ["vendor/old-model"]
+    active = load_model_catalog(path)
+    assert active is not None
+    assert [model.upstream_id for model in active.models] == ["nvidia/new-model"]
+    assert active.models[0].tool_calling is None
+    assert active.models[0].metadata_source == "pi"
 
 
-def test_models_list_without_cache_has_actionable_error(
+def test_models_update_preserves_active_catalog_when_pi_is_unavailable(
     tmp_path: Path,
     monkeypatch,
     capsys,
 ) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    path = default_model_cache_path()
+    ensure_model_catalog(path)
+    before = path.read_bytes()
 
-    status = main(["models", "list"])
+    def fail() -> tuple[PiModel, ...]:
+        raise PiModelListError("Pi command not found")
 
-    assert status == 2
-    assert "models update" in capsys.readouterr().err
-
-
-def test_environment_base_url_is_used_by_models_update(
-    tmp_path: Path,
-    monkeypatch,
-    capsys,
-) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    monkeypatch.setenv("NVIDIA_BASE_URL", "http://127.0.0.1:1/v1")
+    monkeypatch.setattr("claude_nim_proxy.cli.run_pi_model_list", fail)
 
     status = main(["models", "update"])
 
     assert status == 2
-    assert "Model catalog refresh failed" in capsys.readouterr().err
+    assert path.read_bytes() == before
+    error = capsys.readouterr().err
+    assert "Pi model refresh failed" in error
+    assert "~/.config/claude-nim/models.json" in error
 
 
-def test_cache_permissions_are_not_world_readable(tmp_path: Path) -> None:
-    config = load_config(tmp_path / "missing.toml", environ={})
-    cache = ModelCache(
-        updated_at="2026-10-24T16:18:00Z",
-        upstream_base_url="https://integrate.api.nvidia.com/v1",
-        models=merge_model_metadata(["vendor/model"], config),
+def test_models_reset_restores_bundled_template(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    path = default_model_cache_path()
+    save_model_catalog(
+        ModelCatalog(source="pi", updated_at=None, models=()),
+        path,
     )
+
+    status = main(["models", "reset", "--json"])
+
+    assert status == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["source"] == "bundled"
+    active = load_model_catalog(path)
+    assert active is not None
+    assert len(active.models) == len(PI_VISIBLE_NVIDIA_MODEL_IDS)
+
+
+def test_reset_model_catalog_restores_bundled_models(tmp_path: Path) -> None:
     path = tmp_path / "models.json"
+    save_model_catalog(ModelCatalog(source="pi", updated_at=None, models=()), path)
 
-    save_model_cache(cache, path)
+    catalog = reset_model_catalog(path)
 
-    assert stat.S_IMODE(path.stat().st_mode) & 0o077 == 0
-    assert os.path.isfile(path)
+    assert catalog.source == "bundled"
+    assert set(model.upstream_id for model in catalog.models) == set(
+        PI_VISIBLE_NVIDIA_MODEL_IDS
+    )
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["models", "--help"],
+        ["models", "list", "--help"],
+        ["models", "update", "--help"],
+        ["models", "reset", "--help"],
+    ],
+)
+def test_model_help_uses_portable_paths(
+    arguments: list[str],
+    capsys,
+) -> None:
+    with pytest.raises(SystemExit) as captured:
+        main(arguments)
+
+    assert captured.value.code == 0
+    output = capsys.readouterr().out
+    assert "~/.config/claude-nim/models.json" in output
+    assert "src/claude_nim_proxy/data/nvidia_models.json" in output
+    assert "manually edit" in output
+    assert "/home/" not in output
+
+
+def test_resolve_model_catalog_uses_catalog_entries(tmp_path: Path) -> None:
+    config = load_config(tmp_path / "missing.toml", environ={})
+    catalog = ModelCatalog(
+        source="manual",
+        updated_at=None,
+        models=(
+            ModelMetadata(
+                upstream_id="nvidia/model",
+                display_name="Model",
+                context_window=64_000,
+                max_output_tokens=8_000,
+                reasoning=True,
+                input=("text",),
+                tool_calling=True,
+                metadata_source="manual",
+            ),
+        ),
+    )
+
+    models = resolve_model_catalog(catalog, config)
+
+    assert models[0].gateway_id == "anthropic-nim/nvidia/model"
+    assert models[0].context_window == 64_000
+    assert models[0].metadata_source == "manual"

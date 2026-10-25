@@ -13,6 +13,8 @@ from pathlib import Path
 import pytest
 
 from claude_nim_proxy.cli import _resolve_local_token, build_parser, main
+from claude_nim_proxy.models import load_model_catalog
+from claude_nim_proxy.pi_models import PiModel, PiModelListError
 
 
 def test_cli_exposes_the_planned_command_tree() -> None:
@@ -86,6 +88,54 @@ def test_run_requires_an_explicit_model(tmp_path: Path, monkeypatch, capsys) -> 
     assert "--model" in error
 
 
+def test_run_refresh_models_warns_and_continues_when_pi_is_unavailable(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("NVIDIA_MODEL", raising=False)
+
+    def fail() -> tuple[PiModel, ...]:
+        raise PiModelListError("Pi command not found")
+
+    monkeypatch.setattr("claude_nim_proxy.cli.run_pi_model_list", fail)
+
+    status = main(["run", str(tmp_path), "--refresh-models"])
+
+    assert status == 2
+    error = capsys.readouterr().err
+    assert "WARNING: Pi model refresh failed" in error
+    assert "using the existing active model JSON" in error
+    assert "No NVIDIA model is selected" in error
+
+
+def test_run_refresh_models_uses_pi_catalog_before_starting(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("NVIDIA_MODEL", raising=False)
+    pi_models = (
+        PiModel(
+            upstream_id="nvidia/refreshed-model",
+            display_name="refreshed-model (NIM)",
+            context_window=131_072,
+            max_output_tokens=16_384,
+            reasoning=True,
+            input=("text",),
+        ),
+    )
+    monkeypatch.setattr("claude_nim_proxy.cli.run_pi_model_list", lambda: pi_models)
+
+    status = main(["run", str(tmp_path), "--refresh-models"])
+
+    assert status == 2
+    captured = capsys.readouterr()
+    assert "Refreshed active model JSON from Pi: 1 models" in captured.out
+    catalog = load_model_catalog(tmp_path / "claude-nim" / "models.json")
+    assert catalog is not None
+    assert catalog.source == "pi"
+    assert [model.upstream_id for model in catalog.models] == ["nvidia/refreshed-model"]
+
+
 def test_auth_status_does_not_reveal_a_secret(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.setenv("NVIDIA_API_KEY", "secret-value")
@@ -134,7 +184,7 @@ def test_auth_logout_does_not_remove_environment_credential(
 
 
 @pytest.mark.asyncio
-async def test_doctor_checks_claude_credential_catalog_and_entitlement(
+async def test_doctor_checks_claude_credential_and_entitlement(
     fake_upstream, monkeypatch, capsys
 ) -> None:
     monkeypatch.setenv("NVIDIA_API_KEY", "doctor-secret")
@@ -161,7 +211,6 @@ async def test_doctor_checks_claude_credential_catalog_and_entitlement(
     assert "PASS: Listener" in output
     assert "PASS: NVIDIA upstream" in output
     assert "doctor-secret" not in output
-    assert len(fake_upstream.catalog_requests) == 1
     assert len(fake_upstream.requests) == 1
 
 

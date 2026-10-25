@@ -37,15 +37,16 @@ claude --version
 The following procedure sends real requests to hosted NVIDIA NIM and may consume API
 credit. Run it only after explicit approval for a billable task.
 
-### 1. Refresh the public catalog
+### 1. Synchronize and inspect the active model list
 
 ```bash
 uv run claude-nim models update
 uv run claude-nim models list
 ```
 
-Choose a model from the cached tool-capable candidates. Catalog membership does not
-prove that the current NVIDIA account is entitled to call a model.
+If Pi is unavailable, maintain `~/.config/claude-nim/models.json` manually and use
+`claude-nim models list` to validate it. Choose a model from the active list. List
+membership does not prove that the current NVIDIA account is entitled to call a model.
 
 ### 2. Configure and verify the credential
 
@@ -65,8 +66,7 @@ uv run claude-nim doctor --model nvidia/<model-id>
 ```
 
 `doctor` checks Claude Code, configuration, credential resolution, listener readiness,
-the public catalog, and account entitlement. Its entitlement probe also sends one
-minimal authenticated request.
+and account entitlement. Its entitlement probe sends one minimal authenticated request.
 
 ### 4. Exercise Claude Code
 
@@ -82,7 +82,7 @@ In Claude Code, verify all of the following:
 
 1. `/status` reports the loopback `ANTHROPIC_BASE_URL`.
 2. A one-shot text prompt produces incremental output.
-3. The model picker shows curated IDs beginning with `anthropic-nim/`, plus the explicitly selected model.
+3. The model picker shows active model IDs beginning with `anthropic-nim/`, plus the explicitly selected model.
 4. A request to read a local file completes the `tool_use` → tool result → final answer
    round trip.
 5. A subagent and a background agent both use the selected NVIDIA model rather than an

@@ -1,6 +1,6 @@
 """Command-line entry point for claude-nim.
 
-The command tree includes credential management, the standalone gateway, NVIDIA model
+The command tree includes credential management, the standalone gateway, active model
 catalog operations, diagnostics, and the one-command Claude Code runner.
 """
 
@@ -31,19 +31,19 @@ from .credentials import (
 )
 from .diagnostics import configure_debug, set_debug_secrets
 from .models import (
-    ModelCache,
-    ModelCacheError,
+    CatalogDiff,
+    ModelCatalog,
     ModelCatalogError,
-    ModelInfo,
+    ModelMetadata,
     compare_catalog_ids,
     default_model_cache_path,
-    load_bundled_model_metadata,
-    load_model_cache,
-    merge_model_metadata,
-    parse_nvidia_model_catalog,
+    ensure_model_catalog,
+    reset_model_catalog,
+    resolve_model_catalog,
     resolve_model_metadata,
     save_model_cache,
 )
+from .pi_models import PiModelListError, run_pi_model_list
 from .runner import (
     ClaudeLaunchError,
     create_temporary_settings,
@@ -58,9 +58,20 @@ from .runner import (
 from .server import GatewayServer, GatewaySettings
 from .translate.anthropic_to_openai import resolve_upstream_model
 from .translate.errors import AnthropicError
-from .upstream import NvidiaCatalogClient, NvidiaUpstreamClient
+from .upstream import NvidiaUpstreamClient
 
 _PROGRAM_NAME = "claude-nim"
+_MODEL_JSON_HELP = """Model JSON files:
+
+  Active model JSON:
+    ~/.config/claude-nim/models.json
+
+  Bundled default JSON:
+    src/claude_nim_proxy/data/nvidia_models.json
+
+You can manually edit the active model JSON and set its top-level source to "manual".
+`claude-nim models update` replaces it when Pi returns a valid non-empty list.
+`claude-nim models reset` restores the bundled default."""
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -75,6 +86,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = commands.add_parser("run", help="run the proxy and Claude Code together")
     run.add_argument("project_dir", nargs="?", default=".", help="Claude Code project directory")
+    run.add_argument(
+        "--refresh-models",
+        action="store_true",
+        help="refresh the active model JSON from Pi before starting",
+    )
     _add_common_options(run)
 
     serve = commands.add_parser("serve", help="run only the local Anthropic proxy")
@@ -105,18 +121,37 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--upstream-base-url", help="OpenAI-compatible NVIDIA base URL")
     auth_commands.add_parser("logout", help="remove the stored NVIDIA API credential")
 
-    models = commands.add_parser("models", help="inspect and refresh NVIDIA models")
+    models = commands.add_parser(
+        "models",
+        help="inspect and maintain the active NVIDIA model list",
+        epilog=_MODEL_JSON_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     model_commands = models.add_subparsers(dest="models_command", required=True)
-    model_list = model_commands.add_parser("list", help="list cached NVIDIA models and aliases")
+    model_list = model_commands.add_parser(
+        "list",
+        help="list the active NVIDIA models and aliases",
+        epilog=_MODEL_JSON_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     model_list.add_argument("--config", type=Path, help="path to config.toml")
     model_list.add_argument("--json", action="store_true", help="emit JSON output")
-    model_update = model_commands.add_parser("update", help="refresh the NVIDIA model catalog")
-    model_update.add_argument("--config", type=Path, help="path to config.toml")
-    model_update.add_argument(
-        "--upstream-base-url",
-        help="OpenAI-compatible NVIDIA base URL",
+    model_update = model_commands.add_parser(
+        "update",
+        help="replace the active model list with Pi's NVIDIA model list",
+        epilog=_MODEL_JSON_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    model_update.add_argument("--config", type=Path, help="path to config.toml")
     model_update.add_argument("--json", action="store_true", help="emit JSON output")
+    model_reset = model_commands.add_parser(
+        "reset",
+        help="restore the bundled default model list",
+        epilog=_MODEL_JSON_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    model_reset.add_argument("--config", type=Path, help="path to config.toml")
+    model_reset.add_argument("--json", action="store_true", help="emit JSON output")
 
     doctor = commands.add_parser("doctor", help="check proxy prerequisites and connectivity")
     _add_common_options(doctor)
@@ -144,6 +179,7 @@ def main(argv: list[str] | None = None) -> int:
             namespace.project_dir,
             passthrough,
             allow_non_loopback=namespace.allow_non_loopback,
+            refresh_models=namespace.refresh_models,
         )
     if namespace.command == "serve":
         return _serve_gateway(
@@ -252,6 +288,7 @@ def _run_with_claude(
     claude_arguments: list[str],
     *,
     allow_non_loopback: bool,
+    refresh_models: bool,
 ) -> int:
     try:
         project_path = Path(project_dir).expanduser().resolve()
@@ -264,6 +301,19 @@ def _run_with_claude(
             file=sys.stderr,
         )
         return 2
+    if refresh_models:
+        try:
+            catalog, _ = _refresh_active_models_from_pi()
+        except PiModelListError as exc:
+            print(
+                f"WARNING: Pi model refresh failed; using the existing active model JSON: {exc}",
+                file=sys.stderr,
+            )
+        except ModelCatalogError as exc:
+            print(f"Model catalog error: {exc}", file=sys.stderr)
+            return 2
+        else:
+            print(f"Refreshed active model JSON from Pi: {len(catalog.models)} models")
     selected_model_id = config.default_model
     if not selected_model_id:
         print(_missing_model_message(config), file=sys.stderr)
@@ -360,26 +410,20 @@ async def _run_gateway_and_claude(
 def _missing_model_message(config: AppConfig) -> str:
     candidates: list[str] = []
     try:
-        cache = load_model_cache(default_model_cache_path())
-    except ModelCacheError:
-        cache = None
-    if cache is not None and cache.upstream_base_url.rstrip("/") == config.upstream_base_url.rstrip(
-        "/"
-    ):
+        catalog = ensure_model_catalog(default_model_cache_path())
         candidates = [
             model.upstream_id
-            for model in merge_model_metadata(
-                (item.upstream_id for item in cache.models),
-                config,
-            )
+            for model in resolve_model_catalog(catalog, config)
             if model.tool_calling is not False
         ]
+    except ModelCatalogError:
+        candidates = []
     message = (
         "No NVIDIA model is selected. Use --model, set NVIDIA_MODEL, "
         "or set default_model in config.toml."
     )
     if candidates:
-        message += " Cached tool-capable candidates: " + ", ".join(candidates[:10]) + "."
+        message += " Active tool-capable candidates: " + ", ".join(candidates[:10]) + "."
     return message
 
 
@@ -482,26 +526,13 @@ def _gateway_settings(
     resolved_model_id = selected_model_id or config.default_model
     if not resolved_model_id:
         raise ValueError("No NVIDIA model is selected.")
-    selected_model = resolve_model_metadata(resolved_model_id, config)
-    catalog_models: tuple[ModelInfo, ...] = ()
     try:
-        cache = load_model_cache(default_model_cache_path())
-    except ModelCacheError as exc:
-        print(f"WARNING: ignoring invalid model cache: {exc}", file=sys.stderr)
-        cache = None
-    if cache is not None and cache.upstream_base_url.rstrip("/") == config.upstream_base_url.rstrip(
-        "/"
-    ):
-        catalog_models = merge_model_metadata(
-            (model.upstream_id for model in cache.models),
-            config,
-        )
-    curated_model_ids = frozenset(load_bundled_model_metadata())
-    picker_model_ids = tuple(
-        model.upstream_id
-        for model in catalog_models
-        if model.upstream_id in curated_model_ids
-    )
+        catalog = ensure_model_catalog(default_model_cache_path())
+    except ModelCatalogError as exc:
+        raise ValueError(f"Invalid active model catalog: {exc}") from exc
+    catalog_models = resolve_model_catalog(catalog, config)
+    selected_model = resolve_model_metadata(resolved_model_id, config, catalog)
+    picker_model_ids = tuple(model.upstream_id for model in catalog_models)
     return GatewaySettings(
         local_token=local_token or secrets.token_urlsafe(32),
         default_model=resolved_model_id,
@@ -741,39 +772,40 @@ def _models_command(config: AppConfig, command: str, *, json_output: bool) -> in
         return _models_list(config, json_output=json_output)
     if command == "update":
         try:
-            return asyncio.run(_models_update(config, json_output=json_output))
-        except (ModelCatalogError, AnthropicError) as exc:
-            print(f"Model catalog refresh failed: {exc}", file=sys.stderr)
+            return _models_update(config, json_output=json_output)
+        except PiModelListError as exc:
+            print(f"Pi model refresh failed: {exc}", file=sys.stderr)
+            print(
+                "Maintain the active model JSON manually at "
+                "~/.config/claude-nim/models.json.",
+                file=sys.stderr,
+            )
             return 2
+        except ModelCatalogError as exc:
+            print(f"Model catalog error: {exc}", file=sys.stderr)
+            return 2
+    if command == "reset":
+        return _models_reset(config, json_output=json_output)
     print(f"Unknown models command: {command}", file=sys.stderr)
     return 2
 
 
 def _models_list(config: AppConfig, *, json_output: bool) -> int:
-    cache_path = default_model_cache_path()
+    catalog_path = default_model_cache_path()
     try:
-        cache = load_model_cache(cache_path)
-    except ModelCacheError as exc:
+        catalog = ensure_model_catalog(catalog_path)
+    except ModelCatalogError as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    if cache is None:
-        print(
-            f"No NVIDIA model cache found at {cache_path}. Run 'claude-nim models update' first.",
-            file=sys.stderr,
-        )
-        return 2
+    models = resolve_model_catalog(catalog, config)
 
-    models = merge_model_metadata(
-        (model.upstream_id for model in cache.models),
-        config,
-    )
     if json_output:
         print(
             json.dumps(
                 {
-                    "version": cache.version,
-                    "updated_at": cache.updated_at,
-                    "upstream_base_url": cache.upstream_base_url,
+                    "version": catalog.version,
+                    "source": catalog.source,
+                    "updated_at": catalog.updated_at,
                     "models": [model.to_dict() for model in models],
                 },
                 indent=2,
@@ -783,7 +815,8 @@ def _models_list(config: AppConfig, *, json_output: bool) -> int:
         return 0
 
     print(f"NVIDIA models: {len(models)}")
-    print(f"Cache updated: {cache.updated_at}")
+    print(f"Catalog source: {catalog.source}")
+    print(f"Catalog updated: {catalog.updated_at or 'not set (bundled initialization)'}")
     for model in models:
         tools = _unknown_text(model.tool_calling)
         reasoning = _unknown_text(model.reasoning)
@@ -796,51 +829,25 @@ def _models_list(config: AppConfig, *, json_output: bool) -> int:
     return 0
 
 
-async def _models_update(config: AppConfig, *, json_output: bool) -> int:
-    cache_path = default_model_cache_path()
+def _models_update(config: AppConfig, *, json_output: bool) -> int:
+    del config
+    catalog_path = default_model_cache_path()
     try:
-        previous_cache = load_model_cache(cache_path)
-    except ModelCacheError as exc:
-        print(str(exc), file=sys.stderr)
-        return 2
-
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None)) as session:
-        client = NvidiaCatalogClient(
-            session,
-            base_url=config.upstream_base_url,
-            connect_timeout_seconds=config.upstream_connect_timeout_seconds,
-            read_timeout_seconds=config.upstream_read_timeout_seconds,
-        )
-        payload = await client.fetch_catalog()
-    model_ids = parse_nvidia_model_catalog(payload)
-    models = merge_model_metadata(model_ids, config)
-    previous_ids = (
-        tuple(model.upstream_id for model in previous_cache.models) if previous_cache else ()
-    )
-    difference = compare_catalog_ids(previous_ids, model_ids)
-    updated_at = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
-    cache = ModelCache(
-        updated_at=updated_at,
-        upstream_base_url=config.upstream_base_url.rstrip("/"),
-        models=models,
-    )
-    save_model_cache(cache, cache_path)
-
-    missing_metadata = tuple(
-        model.upstream_id for model in models if model.metadata_source == "unknown"
-    )
+        catalog, difference = _refresh_active_models_from_pi()
+    except ModelCatalogError:
+        raise
     if json_output:
         print(
             json.dumps(
                 {
-                    "updated_at": updated_at,
-                    "upstream_base_url": cache.upstream_base_url,
-                    "model_count": len(models),
+                    "version": catalog.version,
+                    "source": catalog.source,
+                    "updated_at": catalog.updated_at,
+                    "model_count": len(catalog.models),
                     "added": list(difference.added),
                     "removed": list(difference.removed),
                     "unchanged": list(difference.unchanged),
-                    "missing_metadata": list(missing_metadata),
-                    "cache_path": str(cache_path),
+                    "catalog_path": str(catalog_path),
                 },
                 indent=2,
                 ensure_ascii=False,
@@ -848,16 +855,70 @@ async def _models_update(config: AppConfig, *, json_output: bool) -> int:
         )
         return 0
 
-    print(f"Updated NVIDIA model catalog: {len(models)} models")
+    print(f"Updated active model JSON from Pi: {len(catalog.models)} models")
     print(f"Added: {len(difference.added)}; removed: {len(difference.removed)}")
-    print(f"Cache: {cache_path}")
-    if missing_metadata:
-        print(f"Missing curated metadata: {len(missing_metadata)}")
-        for model_id in missing_metadata:
-            print(f"  {model_id}")
-    else:
-        print("Missing curated metadata: 0")
+    print(f"Active model JSON: {catalog_path}")
     return 0
+
+
+def _models_reset(config: AppConfig, *, json_output: bool) -> int:
+    del config
+    catalog_path = default_model_cache_path()
+    try:
+        catalog = reset_model_catalog(catalog_path)
+    except ModelCatalogError as exc:
+        print(f"Model catalog error: {exc}", file=sys.stderr)
+        return 2
+    if json_output:
+        print(
+            json.dumps(
+                {
+                    "version": catalog.version,
+                    "source": catalog.source,
+                    "updated_at": catalog.updated_at,
+                    "model_count": len(catalog.models),
+                    "catalog_path": str(catalog_path),
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+        return 0
+    print(f"Restored bundled model list: {len(catalog.models)} models")
+    print(f"Active model JSON: {catalog_path}")
+    return 0
+
+
+def _refresh_active_models_from_pi() -> tuple[ModelCatalog, CatalogDiff]:
+    catalog_path = default_model_cache_path()
+    previous = ensure_model_catalog(catalog_path)
+    pi_models = run_pi_model_list()
+    metadata = tuple(
+        ModelMetadata(
+            upstream_id=model.upstream_id,
+            display_name=model.display_name,
+            context_window=model.context_window,
+            max_output_tokens=model.max_output_tokens,
+            reasoning=model.reasoning,
+            input=model.input,
+            tool_calling=None,
+            source=("nvidia",),
+            metadata_source="pi",
+        )
+        for model in sorted(pi_models, key=lambda item: item.upstream_id)
+    )
+    updated_at = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+    catalog = ModelCatalog(
+        source="pi",
+        updated_at=updated_at,
+        models=metadata,
+    )
+    difference = compare_catalog_ids(
+        (model.upstream_id for model in previous.models),
+        (model.upstream_id for model in metadata),
+    )
+    save_model_cache(catalog, catalog_path)
+    return catalog, difference
 
 
 def _unknown_text(value: bool | None) -> str:
@@ -949,17 +1010,6 @@ async def _doctor_upstream(
     raw_model = resolve_upstream_model(selected_model)
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None)) as session:
-            catalog_client = NvidiaCatalogClient(
-                session,
-                base_url=config.upstream_base_url,
-                connect_timeout_seconds=config.upstream_connect_timeout_seconds,
-                read_timeout_seconds=config.upstream_read_timeout_seconds,
-            )
-            catalog_payload = await catalog_client.fetch_catalog()
-            catalog_ids = parse_nvidia_model_catalog(catalog_payload)
-            if raw_model not in catalog_ids:
-                return False, f"model {raw_model} is not present in the NVIDIA catalog"
-
             upstream_client = NvidiaUpstreamClient(
                 session,
                 base_url=config.upstream_base_url,
@@ -980,10 +1030,10 @@ async def _doctor_upstream(
         if exc.status == 404:
             return (
                 False,
-                f"model {raw_model} is not available to this NVIDIA account (404 entitlement)",
+                f"model {raw_model} is not available to this NVIDIA account or upstream",
             )
         return False, exc.message
-    return True, f"catalog and account entitlement checks passed for {raw_model}"
+    return True, f"model availability and account entitlement check passed for {raw_model}"
 
 
 if __name__ == "__main__":  # pragma: no cover
