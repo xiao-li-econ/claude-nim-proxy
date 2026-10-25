@@ -13,6 +13,15 @@ user and is never modified by an upgrade.
 
 Nothing yet.
 
+## [0.1.1] - 2026-10-25
+
+### Changed
+
+- Refreshed the packaged README so the PyPI project page shows the current install
+  instructions (`uv tool install claude-nim-proxy`) instead of the pre-release wording.
+  PyPI release metadata is immutable, so the corrected description ships with this
+  patch release.
+
 ## [0.1.0] - 2026-10-25
 
 ### Added
@@ -34,5 +43,6 @@ Nothing yet.
 - Redacted metadata-only debug tracing and an opt-in Claude Code compatibility suite.
 - Installation documentation, MIT license, and automated CI and release workflows.
 
-[Unreleased]: https://github.com/xiao-li-econ/claude-nim-proxy/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/xiao-li-econ/claude-nim-proxy/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/xiao-li-econ/claude-nim-proxy/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/xiao-li-econ/claude-nim-proxy/releases/tag/v0.1.0
