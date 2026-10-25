@@ -1,11 +1,11 @@
 # Implementation Plan: Thin Claude Code ↔ NVIDIA NIM Proxy
 
-- **Status:** The MVP is merged into `main` through PR #4; the user-confirmed curated model-picker refinement is merged into `main` through PR #5.
+- **Status:** The MVP is merged into `main` through PR #4; the curated model-picker refinement is merged into `main` through PR #5; expansion of the curated catalog to every NVIDIA model visible through Pi is complete in open PR #6.
 - **Research snapshot:** 2026-10-24
 - **Verified local versions:** Python 3.12.3, Claude Code 2.1.310, uv 0.9.2, Node.js 24.14.1
-- **Repository:** Git repository; Phase 4 is implemented in commit `361e816` and Phase 5 in commit `f6ae342`, merged into `main` through PR #4 as merge commit `e377a50`; the curated model-picker refinement is commit `ef609ec`, merged into `main` through PR #5 as merge commit `8717d6b`.
+- **Repository:** Git repository; Phase 4 is implemented in commit `361e816` and Phase 5 in commit `f6ae342`, merged into `main` through PR #4 as merge commit `e377a50`; the curated model-picker refinement is commit `ef609ec`, merged into `main` through PR #5 as merge commit `8717d6b`; the Pi-visible curated catalog expansion is commit `dbf3cf8` in open PR #6.
 - **Current implementation:** The CLI/configuration skeleton, pure Anthropic/OpenAI translators, SSE state machine, authenticated aiohttp gateway, NVIDIA upstream client, Anthropic error conversion, timeout handling, cancellation handling, NVIDIA catalog parsing, bundled capability metadata, an atomic credential-free model cache, model commands, OS credential-store integration, the warned mode-0600 fallback, auth commands, the one-command Claude Code runner, doctor diagnostics, redacted metadata-only tracing, current-Claude compatibility coverage, and documented smoke tests are implemented.
-- **Next action:** Use the curated Claude Code model picker; optionally run the documented hosted NVIDIA smoke test after explicit approval for potentially billable requests.
+- **Next action:** Review and merge PR #6; restart Claude Code to load the expanded 27-model picker.
 
 ## Implementation tracker
 
@@ -20,8 +20,9 @@ This table is the durable handoff state between sessions. Update it whenever a p
 | Phase 4 — Credentials and one-command runner | Complete | 133 tests passed; Ruff, mypy, and `uv build` passed; commit `361e816` | Added `auth login/status/verify/logout`, environment/keyring/file-fallback credential resolution, secure prompts, a one-command Claude Code launcher, isolated mode-0600 settings, signal forwarding and cleanup, and doctor diagnostics. |
 | Phase 5 — Compatibility hardening and documentation | Complete | 137 default tests passed (5 live-Claude tests skipped); all 5 opt-in Claude Code 2.1.310 compatibility tests passed; Ruff, mypy, and `uv build` passed; commit `f6ae342` | Added metadata-only redacted tracing, a 2,000-delta long-stream test, opt-in installed-Claude coverage for text/tools/images/subagents/background agents, final README guidance, and documented offline/live smoke procedures. Hosted NVIDIA inference was not run because it requires explicit billable-request approval. |
 | Post-MVP refinement — Curated model picker | Complete | 138 default tests passed (5 live-Claude tests skipped); all 5 opt-in Claude Code compatibility tests passed; Ruff, mypy, and `uv build` passed; commit `ef609ec` | Claude Code discovery now advertises only bundled curated models present in the current catalog plus the explicitly selected model. The complete catalog remains cached and selectable through explicit configuration, and the stale Nemotron Nano alias was removed. |
+| Post-MVP refinement — Pi-visible curated catalog | Complete | 139 default tests passed (5 live-Claude tests skipped); all 5 opt-in Claude Code compatibility tests passed; Ruff, mypy, and `uv build` passed; credential-free cache refreshed to 85 models; commit `dbf3cf8`; open PR #6 | Adds all 22 NVIDIA models exposed by `pi --list-models nvidia` to the bundled curated catalog while retaining the five existing curated models that Pi does not expose. |
 
-**Current next action:** Use the curated Claude Code model picker; optionally run the documented hosted NVIDIA smoke test after explicit approval for potentially billable requests. All implementation decisions in section 19 are confirmed and binding.
+**Current next action:** Review and merge PR #6; restart Claude Code to load the expanded 27-model picker. All implementation decisions in section 19 are confirmed and binding.
 
 ## 1. Goal
 
@@ -557,7 +558,7 @@ Cache schema:
 
 The bundled file `src/claude_nim_proxy/data/nvidia_models.json` uses the same model-object shape and a top-level `version`/`models` structure, but does not contain `updated_at`, `upstream_base_url`, or user overrides. `gateway_id` is derived from `upstream_id` rather than duplicated in the bundled source data. The cache may store the derived value for convenient inspection.
 
-The curated overlay covers the hosted models that are practical with Claude Code: the Nemotron 3/3.5 family, MiniMax M3.1 Flash, Kimi K2.6, DeepSeek V4.1 Flash, GLM-5.3 and GLM-5.3 Flash, Step 5 Preview, GPT-OSS 20B, Poolside Laguna XS 2.1, Mixtral 8x22B, Mistral Large 2, and Llama 3.1 Nemotron Ultra. Capability values are taken from NVIDIA's model cards and NIM API reference; a value NVIDIA does not publish is left unset so that the global configuration fallback applies instead of a guessed value.
+The curated overlay contains 27 models: all 22 NVIDIA models exposed by `pi --list-models nvidia`, plus the five existing curated NVIDIA models that Pi does not expose (Mistral Large 2, Mixtral 8x22B, Nemotron 3 Super, Nemotron 3.5 Bolt, and Nemotron Nano 3). Capability values for the original curated entries are taken from NVIDIA's model cards and NIM API reference. Context, output, reasoning, and image capability values for the nine newly added Pi-visible models come from the same Pi model registry used by `pi --list-models nvidia`. Pi does not publish tool-calling capability, so `tool_calling` remains unset for those additions and is resolved as unknown rather than guessed.
 
 `reasoning` and `tool_calling` are tri-state: `true`, `false`, or `null` for unknown. The `input` list contains supported modalities (`"text"` and optionally `"image"`). `metadata_source` is one of `bundled`, `user`, or `unknown`.
 
@@ -909,6 +910,7 @@ All decisions below are confirmed by the user and are binding for implementation
 6. **Native NIM Anthropic endpoint:** not applicable and out of scope. The project will not implement native Anthropic passthrough or a local-NIM bypass.
 7. **Credential storage:** prefer the OS credential store through `keyring`; use a mode-`0600` file only as an explicitly warned, unencrypted fallback.
 8. **Model picker scope:** Claude Code discovery advertises only bundled curated models present in the current NVIDIA catalog, plus the explicitly selected model. The complete catalog remains in the local cache, and non-curated models remain selectable through explicit model configuration.
+9. **Pi-visible curated models:** The bundled curated catalog must include every NVIDIA model exposed by `pi --list-models nvidia`. Existing curated models not exposed by Pi remain included. Pi-provided capability metadata may fill context, output, reasoning, and image fields, while unprovided tool-calling support remains unknown.
 
 ## 20. Sources
 

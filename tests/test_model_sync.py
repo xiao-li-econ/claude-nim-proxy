@@ -42,6 +42,31 @@ CURATED_AGENTIC_MODEL_IDS = (
     "z-ai/glm-5.3",
 )
 
+PI_VISIBLE_NVIDIA_MODEL_IDS = (
+    "deepseek-ai/deepseek-v4.1-flash",
+    "google/diffusiongemma-26b-a4b-it",
+    "google/gemma-3-12b-it",
+    "google/gemma-3-4b-it",
+    "meta/llama-3.2-11b-vision-instruct",
+    "meta/llama-3.2-90b-vision-instruct",
+    "meta/muse-glimmer-30b",
+    "minimaxai/minimax-m3.1-flash",
+    "mistralai/mistral-7b-instruct-v0.3",
+    "moonshotai/kimi-k2.6",
+    "nvidia/cosmos-reason2-8b",
+    "nvidia/llama-3.1-nemotron-70b-instruct",
+    "nvidia/llama-3.1-nemotron-ultra-253b-v1",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+    "nvidia/nemotron-3-ultra-550b-a55b",
+    "nvidia/nemotron-3.5-lightning-30b-a3b",
+    "nvidia/nemotron-3.5-super-vl-120b-a12b",
+    "openai/gpt-oss-20b",
+    "poolside/laguna-xs-2.1",
+    "stepfun-ai/step-5-preview",
+    "z-ai/glm-5.3",
+    "z-ai/glm-5.3-flash",
+)
+
 
 def test_gateway_alias_is_reversible() -> None:
     alias = gateway_alias("nvidia/nemotron-3-super-120b-a12b")
@@ -194,6 +219,16 @@ def test_bundled_metadata_file_is_valid() -> None:
     assert bundled["nvidia/nemotron-3-super-120b-a12b"].tool_calling is True
     assert "nvidia/nemotron-nano-3-30b-a3b" in bundled
     assert "nvidia/nemotron-3-nano-30b-a3b" not in bundled
+
+
+def test_bundled_metadata_covers_pi_visible_nvidia_models() -> None:
+    bundled = load_bundled_model_metadata()
+
+    assert set(PI_VISIBLE_NVIDIA_MODEL_IDS) <= set(bundled)
+    assert bundled["google/diffusiongemma-26b-a4b-it"].context_window == 250_000
+    assert bundled["google/diffusiongemma-26b-a4b-it"].input == ("text", "image")
+    assert bundled["meta/muse-glimmer-30b"].max_output_tokens == 131_072
+    assert bundled["mistralai/mistral-7b-instruct-v0.3"].tool_calling is None
 
 
 def test_bundled_metadata_covers_curated_agentic_models() -> None:
