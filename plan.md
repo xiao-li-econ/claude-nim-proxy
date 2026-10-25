@@ -1,11 +1,11 @@
 # Implementation Plan: Thin Claude Code ↔ NVIDIA NIM Proxy
 
-- **Status:** Phases 4 and 5 are complete on `feature/phase-4-runner`; the MVP implementation is ready for merge and optional approved live NVIDIA smoke testing.
+- **Status:** Phases 4 and 5 are complete in open PR #4; the MVP implementation is ready for review/merge and optional approved live NVIDIA smoke testing.
 - **Research snapshot:** 2026-10-24
 - **Verified local versions:** Python 3.12.3, Claude Code 2.1.310, uv 0.9.2, Node.js 24.14.1
-- **Repository:** Git repository; Phase 4 is implemented in commit `361e816` and Phase 5 in commit `f6ae342` on branch `feature/phase-4-runner` (Phase 3 remains merged into remote `main` as `bb97dc7`).
+- **Repository:** Git repository; Phase 4 is implemented in commit `361e816` and Phase 5 in commit `f6ae342` on pushed branch `feature/phase-4-runner`, with the completed work proposed in PR #4 (Phase 3 remains merged into remote `main` as `bb97dc7`).
 - **Current implementation:** The CLI/configuration skeleton, pure Anthropic/OpenAI translators, SSE state machine, authenticated aiohttp gateway, NVIDIA upstream client, Anthropic error conversion, timeout handling, cancellation handling, NVIDIA catalog parsing, bundled capability metadata, an atomic credential-free model cache, model commands, OS credential-store integration, the warned mode-0600 fallback, auth commands, the one-command Claude Code runner, doctor diagnostics, redacted metadata-only tracing, current-Claude compatibility coverage, and documented smoke tests are implemented.
-- **Next action:** Merge the completed Phase 4/5 branch; run the documented hosted NVIDIA smoke test only after explicit approval for potentially billable requests. All section 19 decisions are confirmed.
+- **Next action:** Review and merge PR #4; run the documented hosted NVIDIA smoke test only after explicit approval for potentially billable requests. All section 19 decisions are confirmed.
 
 ## Implementation tracker
 
@@ -20,7 +20,7 @@ This table is the durable handoff state between sessions. Update it whenever a p
 | Phase 4 — Credentials and one-command runner | Complete | 133 tests passed; Ruff, mypy, and `uv build` passed; commit `361e816` | Added `auth login/status/verify/logout`, environment/keyring/file-fallback credential resolution, secure prompts, a one-command Claude Code launcher, isolated mode-0600 settings, signal forwarding and cleanup, and doctor diagnostics. |
 | Phase 5 — Compatibility hardening and documentation | Complete | 137 default tests passed (5 live-Claude tests skipped); all 5 opt-in Claude Code 2.1.310 compatibility tests passed; Ruff, mypy, and `uv build` passed; commit `f6ae342` | Added metadata-only redacted tracing, a 2,000-delta long-stream test, opt-in installed-Claude coverage for text/tools/images/subagents/background agents, final README guidance, and documented offline/live smoke procedures. Hosted NVIDIA inference was not run because it requires explicit billable-request approval. |
 
-**Current next action:** Merge `feature/phase-4-runner` (`361e816`, `f6ae342`, `67270f1`) into `main`; optionally run the documented hosted NVIDIA smoke test after explicit approval for potentially billable requests. All implementation decisions in section 19 are confirmed and binding.
+**Current next action:** Review and merge PR #4 from `feature/phase-4-runner` (`361e816`, `f6ae342`, `67270f1`); optionally run the documented hosted NVIDIA smoke test after explicit approval for potentially billable requests. All implementation decisions in section 19 are confirmed and binding.
 
 ## 1. Goal
 
