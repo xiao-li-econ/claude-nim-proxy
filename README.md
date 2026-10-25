@@ -106,14 +106,14 @@ The cache is written atomically to:
 ```
 
 It contains model IDs and capability metadata, never credentials. The bundled curated
-metadata (`src/claude_nim_proxy/data/nvidia_models.json`) covers the hosted models that
-work well with Claude Code — the Nemotron 3 family, MiniMax M3.1 Flash, Kimi K2.6,
-DeepSeek V4.1 Flash, GLM-5.3, Step 5 Preview, GPT-OSS 20B, and a few other
-tool-calling chat models. Each entry records the context window, maximum output,
-reasoning support, image support, and tool-calling support published by NVIDIA's model
-cards and API reference. Values that NVIDIA does not publish are left unset and fall
-back to the global configuration; unlisted models remain selectable with conservative
-unknown capabilities. Per-model exceptions can be supplied in `config.toml`:
+metadata (`src/claude_nim_proxy/data/nvidia_models.json`) includes every NVIDIA model
+exposed by `pi --list-models nvidia`, plus five existing curated NVIDIA models that Pi
+does not expose. Original entries use capability values published by NVIDIA's model
+cards and API reference. The nine newly added Pi-visible models use context, output,
+reasoning, and image values from the Pi model registry; Pi does not publish tool-calling
+support, so that field remains unknown for those entries. Unset values fall back to the
+global configuration, and unlisted models remain selectable with conservative unknown
+capabilities. Per-model exceptions can be supplied in `config.toml`:
 
 ```toml
 [model_overrides."nvidia/nemotron-3-super-120b-a12b"]
