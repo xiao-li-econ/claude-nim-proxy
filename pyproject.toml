@@ -1,6 +1,6 @@
 [project]
 name = "claude-nim-proxy"
-version = "0.1.0"
+version = "0.1.1"
 description = "Thin Claude Code to NVIDIA NIM translator"
 readme = "README.md"
 authors = [
