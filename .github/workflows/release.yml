@@ -100,3 +100,8 @@ jobs:
               --title "$RELEASE_TAG" \
               --notes-file release-notes.md
           fi
+
+      - name: Attach the distributions to the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$RELEASE_TAG" dist/* --clobber
