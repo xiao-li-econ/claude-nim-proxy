@@ -1,11 +1,11 @@
 # Implementation Plan: Thin Claude Code ↔ NVIDIA NIM Proxy
 
-- **Status:** The MVP is merged into `main` through PR #4; the curated model-picker refinement is merged into `main` through PR #5; expansion of the curated catalog to every NVIDIA model visible through Pi is in progress on `feature/pi-curated-model-catalog`.
+- **Status:** The MVP is merged into `main` through PR #4; the curated model-picker refinement is merged into `main` through PR #5; expansion of the curated catalog to every NVIDIA model visible through Pi is complete on `feature/pi-curated-model-catalog`.
 - **Research snapshot:** 2026-10-24
 - **Verified local versions:** Python 3.12.3, Claude Code 2.1.310, uv 0.9.2, Node.js 24.14.1
-- **Repository:** Git repository; Phase 4 is implemented in commit `361e816` and Phase 5 in commit `f6ae342`, merged into `main` through PR #4 as merge commit `e377a50`; the curated model-picker refinement is commit `ef609ec`, merged into `main` through PR #5 as merge commit `8717d6b`.
+- **Repository:** Git repository; Phase 4 is implemented in commit `361e816` and Phase 5 in commit `f6ae342`, merged into `main` through PR #4 as merge commit `e377a50`; the curated model-picker refinement is commit `ef609ec`, merged into `main` through PR #5 as merge commit `8717d6b`; the Pi-visible curated catalog expansion is commit `dbf3cf8` on `feature/pi-curated-model-catalog`.
 - **Current implementation:** The CLI/configuration skeleton, pure Anthropic/OpenAI translators, SSE state machine, authenticated aiohttp gateway, NVIDIA upstream client, Anthropic error conversion, timeout handling, cancellation handling, NVIDIA catalog parsing, bundled capability metadata, an atomic credential-free model cache, model commands, OS credential-store integration, the warned mode-0600 fallback, auth commands, the one-command Claude Code runner, doctor diagnostics, redacted metadata-only tracing, current-Claude compatibility coverage, and documented smoke tests are implemented.
-- **Next action:** Validate the expanded 27-model curated catalog and refresh the credential-free local model cache.
+- **Next action:** Review and publish `feature/pi-curated-model-catalog`; restart Claude Code to load the expanded 27-model picker.
 
 ## Implementation tracker
 
@@ -20,9 +20,9 @@ This table is the durable handoff state between sessions. Update it whenever a p
 | Phase 4 — Credentials and one-command runner | Complete | 133 tests passed; Ruff, mypy, and `uv build` passed; commit `361e816` | Added `auth login/status/verify/logout`, environment/keyring/file-fallback credential resolution, secure prompts, a one-command Claude Code launcher, isolated mode-0600 settings, signal forwarding and cleanup, and doctor diagnostics. |
 | Phase 5 — Compatibility hardening and documentation | Complete | 137 default tests passed (5 live-Claude tests skipped); all 5 opt-in Claude Code 2.1.310 compatibility tests passed; Ruff, mypy, and `uv build` passed; commit `f6ae342` | Added metadata-only redacted tracing, a 2,000-delta long-stream test, opt-in installed-Claude coverage for text/tools/images/subagents/background agents, final README guidance, and documented offline/live smoke procedures. Hosted NVIDIA inference was not run because it requires explicit billable-request approval. |
 | Post-MVP refinement — Curated model picker | Complete | 138 default tests passed (5 live-Claude tests skipped); all 5 opt-in Claude Code compatibility tests passed; Ruff, mypy, and `uv build` passed; commit `ef609ec` | Claude Code discovery now advertises only bundled curated models present in the current catalog plus the explicitly selected model. The complete catalog remains cached and selectable through explicit configuration, and the stale Nemotron Nano alias was removed. |
-| Post-MVP refinement — Pi-visible curated catalog | In progress | Pending validation on `feature/pi-curated-model-catalog` | Adds all 22 NVIDIA models exposed by `pi --list-models nvidia` to the bundled curated catalog while retaining the five existing curated models that Pi does not expose. |
+| Post-MVP refinement — Pi-visible curated catalog | Complete | 139 default tests passed (5 live-Claude tests skipped); all 5 opt-in Claude Code compatibility tests passed; Ruff, mypy, and `uv build` passed; credential-free cache refreshed to 85 models; commit `dbf3cf8` | Adds all 22 NVIDIA models exposed by `pi --list-models nvidia` to the bundled curated catalog while retaining the five existing curated models that Pi does not expose. |
 
-**Current next action:** Validate the expanded 27-model curated catalog and refresh the credential-free local model cache. All implementation decisions in section 19 are confirmed and binding.
+**Current next action:** Review and publish `feature/pi-curated-model-catalog`; restart Claude Code to load the expanded 27-model picker. All implementation decisions in section 19 are confirmed and binding.
 
 ## 1. Goal
 
