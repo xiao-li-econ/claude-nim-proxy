@@ -73,6 +73,12 @@ prints it.
    publishes them to PyPI, and creates a GitHub release whose notes are taken from the
    matching `CHANGELOG.md` section. If a step fails, fix the problem and re-run the
    failed workflow run.
+
+   The workflow is safe to re-run: uploads use `skip-existing`, and the GitHub release
+   step refreshes the notes of an existing release instead of failing. To (re)run it for
+   an existing tag without pushing a new tag, use **Run workflow** on the `Release`
+   workflow and provide the tag (for example `v0.1.0`); the workflow checks out that
+   tag.
 7. **Verify the published artifact.**
 
    ```bash
