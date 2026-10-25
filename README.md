@@ -8,18 +8,18 @@ Phase 5 compatibility hardening with redacted diagnostics. It provides strict ty
 configuration, Anthropic/OpenAI request and response translation, incremental SSE
 translation, an authenticated loopback HTTP gateway, an NVIDIA upstream client,
 Anthropic-style error conversion, timeouts, cancellation handling, a credential-free
-NVIDIA model catalog cache, secure CLI-managed credentials, an isolated Claude Code
-launcher, and metadata-only debug tracing.
+active model JSON, secure CLI-managed credentials, an isolated Claude Code launcher,
+and metadata-only debug tracing.
 
 ## One-command usage
 
-Refresh the public model catalog, configure a credential, select a model, and launch
-Claude Code in the current project:
+Optionally synchronize the model list from Pi, configure a credential, select a model,
+and launch Claude Code in the current project:
 
 ```bash
 uv run claude-nim models update
 uv run claude-nim auth login
-uv run claude-nim run . --model nvidia/nemotron-3-super-120b-a12b
+uv run claude-nim run . --model nvidia/nemotron-3.5-lightning-30b-a3b
 ```
 
 With `default_model` set in `~/.config/claude-nim/config.toml` (or `NVIDIA_MODEL` set),
@@ -32,7 +32,7 @@ uv run claude-nim run .
 Arguments after `--` are passed to Claude Code verbatim:
 
 ```bash
-uv run claude-nim run . --model nvidia/nemotron-3-super-120b-a12b -- --resume
+uv run claude-nim run . --model nvidia/nemotron-3.5-lightning-30b-a3b -- --resume
 ```
 
 `run` starts the loopback proxy on an ephemeral port, waits for its health check, creates
@@ -72,7 +72,7 @@ automatically. If no OS credential backend is available, the CLI uses
 that the secret is unencrypted.
 
 The NVIDIA credential is removed from the Claude Code child environment and is never
-placed in the temporary settings file, command line, model cache, or debug output. The
+placed in the temporary settings file, command line, active model JSON, or debug output. The
 only credential inherited by Claude Code is the random local bearer token used by the
 loopback proxy.
 
@@ -82,7 +82,7 @@ loopback proxy.
 
 ```bash
 NVIDIA_API_KEY=nvapi-... \
-  uv run claude-nim serve --model nvidia/nemotron-3-super-120b-a12b
+  uv run claude-nim serve --model nvidia/nemotron-3.5-lightning-30b-a3b
 ```
 
 The generated local bearer token and base URL are printed to standard error as an
@@ -90,54 +90,61 @@ export-ready snippet. The token can instead be supplied through `--token-stdin` 
 mode-`0600` file passed to `--token-file`. Tokens are not accepted as command-line
 arguments.
 
-## NVIDIA model catalog
+## Active NVIDIA model list
 
-Refresh the public NVIDIA model catalog without storing or sending an NVIDIA
-credential:
-
-```bash
-uv run claude-nim models update
-```
-
-The cache is written atomically to:
+The active model list is stored in a credential-free JSON file:
 
 ```text
 ~/.config/claude-nim/models.json
 ```
 
-It contains model IDs and capability metadata, never credentials. The bundled curated
-metadata (`src/claude_nim_proxy/data/nvidia_models.json`) includes every NVIDIA model
-exposed by `pi --list-models nvidia`, plus five existing curated NVIDIA models that Pi
-does not expose. Original entries use capability values published by NVIDIA's model
-cards and API reference. The nine newly added Pi-visible models use context, output,
-reasoning, and image values from the Pi model registry; Pi does not publish tool-calling
-support, so that field remains unknown for those entries. Unset values fall back to the
-global configuration, and unlisted models remain selectable with conservative unknown
-capabilities. Per-model exceptions can be supplied in `config.toml`:
+The shipped bundled list is used only to initialize or reset that file:
 
-```toml
-[model_overrides."nvidia/nemotron-3-super-120b-a12b"]
-display_name = "My NVIDIA model"
-context_window = 1048576
-max_output_tokens = 32768
-reasoning = true
-input = ["text"]
-tool_calling = true
+```text
+src/claude_nim_proxy/data/nvidia_models.json
 ```
 
-List cached IDs, reversible Claude Code aliases, and resolved capabilities:
+If the Pi CLI is installed, synchronize the active list from Pi's NVIDIA provider:
+
+```bash
+uv run claude-nim models update
+```
+
+This runs `pi --list-models nvidia`. A successful, non-empty result replaces the active
+JSON completely; models no longer listed by Pi are removed. Pi reports context, output,
+reasoning, and image capabilities but not tool-calling support, so tool-calling remains
+unknown. If Pi is unavailable, fails, times out, or returns an empty/malformed list,
+the active JSON is preserved for manual maintenance.
+
+Users without Pi can edit `~/.config/claude-nim/models.json` directly and set its
+top-level `"source"` to `"manual"`. A successful `models update` overwrites manual
+changes. Restore the shipped list with:
+
+```bash
+uv run claude-nim models reset
+```
+
+List active IDs, reversible Claude Code aliases, and resolved capabilities:
 
 ```bash
 uv run claude-nim models list
 uv run claude-nim models list --json
 ```
 
-When the cache matches the configured upstream, the gateway advertises the bundled
-curated models that are present in NVIDIA's current catalog through `GET /v1/models`,
-using IDs such as `anthropic-nim/nvidia/nemotron-3-super-120b-a12b`. The explicitly
-selected model is always included, even when it is not curated. The complete catalog
-remains in `models.json` and `models list`; non-curated models remain directly
-selectable with `--model`, `NVIDIA_MODEL`, or `default_model`.
+The gateway advertises every model in the active JSON through `GET /v1/models`, using
+IDs such as `anthropic-nim/nvidia/nemotron-3.5-lightning-30b-a3b`. The explicitly
+selected model is always included, even when it is absent from the active list. Models
+outside the list remain directly selectable with `--model`, `NVIDIA_MODEL`, or
+`default_model`, using conservative capability fallbacks.
+
+To refresh from Pi as part of a run:
+
+```bash
+uv run claude-nim run . --refresh-models
+```
+
+If the refresh fails, `run` warns and continues with the existing active JSON. The
+`models` command help output shows the portable active and bundled JSON paths.
 
 ## Diagnostics
 
@@ -146,16 +153,15 @@ uv run claude-nim doctor
 ```
 
 `doctor` checks for Claude Code, model selection, credential resolution, loopback port
-availability, the public NVIDIA catalog, and account entitlement to the selected model.
-The entitlement probe sends one minimal authenticated request and may consume a small
-amount of API credit.
+availability, and account entitlement to the selected model. The entitlement probe sends
+one minimal authenticated request and may consume a small amount of API credit.
 
 ## Redacted diagnostics
 
 Enable metadata-only debug tracing with `--debug` or `CLAUDE_NIM_DEBUG=1`:
 
 ```bash
-uv run claude-nim serve --model nvidia/nemotron-3-super-120b-a12b --debug
+uv run claude-nim serve --model nvidia/nemotron-3.5-lightning-30b-a3b --debug
 ```
 
 Debug output records request method/path, selected model, stream mode, and upstream

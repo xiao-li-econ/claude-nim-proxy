@@ -26,12 +26,6 @@ upstream_auth = "none"
 listen_port = 4321
 context_window = 131072
 disable_experimental_betas = false
-
-[model_overrides."nvidia/model"]
-display_name = "Custom model"
-context_window = 200000
-reasoning = true
-input = ["text", "image"]
 """,
         encoding="utf-8",
     )
@@ -44,12 +38,6 @@ input = ["text", "image"]
     assert config.listen_port == 4321
     assert config.context_window == 131072
     assert config.disable_experimental_betas is False
-    override = config.model_overrides["nvidia/model"]
-    assert override.display_name == "Custom model"
-    assert override.context_window == 200000
-    assert override.reasoning is True
-    assert override.input == ("text", "image")
-    assert override.tool_calling is None
 
 
 def test_environment_overrides_config(tmp_path: Path) -> None:
@@ -106,15 +94,15 @@ def test_invalid_config_is_rejected(tmp_path: Path, content: str, message: str) 
         load_config(path, environ={})
 
 
-def test_unknown_model_override_key_is_rejected(tmp_path: Path) -> None:
+def test_model_overrides_are_rejected(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
     path.write_text(
         """
 [model_overrides."nvidia/model"]
-unknown = true
+context_window = 200000
 """,
         encoding="utf-8",
     )
 
-    with pytest.raises(ConfigError, match="model_overrides.nvidia/model.unknown"):
+    with pytest.raises(ConfigError, match="unknown configuration key: model_overrides"):
         load_config(path, environ={})

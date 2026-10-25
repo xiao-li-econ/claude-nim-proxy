@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import tomllib
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -33,18 +33,6 @@ class UpstreamAuth(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
-class ModelOverride:
-    """Capability metadata supplied by the user for one raw NVIDIA model ID."""
-
-    display_name: str | None = None
-    context_window: int | None = None
-    max_output_tokens: int | None = None
-    reasoning: bool | None = None
-    input: tuple[str, ...] | None = None
-    tool_calling: bool | None = None
-
-
-@dataclass(frozen=True, slots=True)
 class AppConfig:
     """Fully resolved proxy configuration.
 
@@ -65,7 +53,6 @@ class AppConfig:
     upstream_connect_timeout_seconds: float = DEFAULT_UPSTREAM_CONNECT_TIMEOUT_SECONDS
     upstream_read_timeout_seconds: float = DEFAULT_UPSTREAM_READ_TIMEOUT_SECONDS
     debug: bool = False
-    model_overrides: Mapping[str, ModelOverride] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         _validate_upstream_base_url(self.upstream_base_url)
@@ -84,15 +71,6 @@ _TOP_LEVEL_KEYS = {
     "upstream_connect_timeout_seconds",
     "upstream_read_timeout_seconds",
     "debug",
-    "model_overrides",
-}
-_OVERRIDE_KEYS = {
-    "display_name",
-    "context_window",
-    "max_output_tokens",
-    "reasoning",
-    "input",
-    "tool_calling",
 }
 _ENVIRONMENT_KEYS = {
     "NVIDIA_MODEL": "default_model",
@@ -144,9 +122,8 @@ def load_config(
         "upstream_connect_timeout_seconds": DEFAULT_UPSTREAM_CONNECT_TIMEOUT_SECONDS,
         "upstream_read_timeout_seconds": DEFAULT_UPSTREAM_READ_TIMEOUT_SECONDS,
         "debug": False,
-        "model_overrides": file_values.get("model_overrides", {}),
     }
-    values.update({key: value for key, value in file_values.items() if key != "model_overrides"})
+    values.update(file_values)
     _apply_environment(values, environment)
 
     default_model = _optional_string(values, "default_model")
@@ -176,7 +153,6 @@ def load_config(
             values, "upstream_read_timeout_seconds", minimum=0.0, exclusive=True
         ),
         debug=_boolean(values, "debug"),
-        model_overrides=_parse_model_overrides(values["model_overrides"]),
     )
 
 
@@ -243,68 +219,6 @@ def _apply_environment(values: dict[str, Any], environment: Mapping[str, str]) -
             values[key] = raw_value
 
 
-def _parse_model_overrides(raw: Any) -> dict[str, ModelOverride]:
-    if not isinstance(raw, dict):
-        raise ConfigError("model_overrides must be a table")
-    result: dict[str, ModelOverride] = {}
-    for model_id, model_values in raw.items():
-        if not isinstance(model_id, str) or not model_id:
-            raise ConfigError("model_overrides keys must be non-empty model IDs")
-        if not isinstance(model_values, dict):
-            raise ConfigError(f"model_overrides.{model_id} must be a table")
-        unknown = sorted(set(model_values) - _OVERRIDE_KEYS)
-        if unknown:
-            raise ConfigError(f"unknown configuration key: model_overrides.{model_id}.{unknown[0]}")
-        result[model_id] = _parse_model_override(model_id, model_values)
-    return result
-
-
-def _parse_model_override(model_id: str, values: Mapping[str, Any]) -> ModelOverride:
-    display_name = values.get("display_name")
-    if display_name is not None and (not isinstance(display_name, str) or not display_name):
-        raise ConfigError(f"model_overrides.{model_id}.display_name must be a non-empty string")
-
-    context_window = values.get("context_window")
-    if context_window is not None:
-        context_window = _positive_int(context_window, f"model_overrides.{model_id}.context_window")
-    max_output_tokens = values.get("max_output_tokens")
-    if max_output_tokens is not None:
-        max_output_tokens = _positive_int(
-            max_output_tokens, f"model_overrides.{model_id}.max_output_tokens"
-        )
-
-    reasoning = values.get("reasoning")
-    if reasoning is not None and not isinstance(reasoning, bool):
-        raise ConfigError(f"model_overrides.{model_id}.reasoning must be a boolean or null")
-
-    tool_calling = values.get("tool_calling")
-    if tool_calling is not None and not isinstance(tool_calling, bool):
-        raise ConfigError(f"model_overrides.{model_id}.tool_calling must be a boolean or null")
-
-    modalities = values.get("input")
-    parsed_modalities: tuple[str, ...] | None = None
-    if modalities is not None:
-        if not isinstance(modalities, list) or not all(
-            isinstance(item, str) for item in modalities
-        ):
-            raise ConfigError(f"model_overrides.{model_id}.input must be an array of strings")
-        invalid = sorted(set(modalities) - {"text", "image"})
-        if invalid:
-            raise ConfigError(
-                f"model_overrides.{model_id}.input contains invalid modality: {invalid[0]}"
-            )
-        parsed_modalities = tuple(modalities)
-
-    return ModelOverride(
-        display_name=display_name,
-        context_window=context_window,
-        max_output_tokens=max_output_tokens,
-        reasoning=reasoning,
-        input=parsed_modalities,
-        tool_calling=tool_calling,
-    )
-
-
 def _optional_string(values: Mapping[str, Any], key: str) -> str | None:
     value = values[key]
     if value is None:
@@ -328,12 +242,6 @@ def _integer(values: Mapping[str, Any], key: str, *, minimum: int) -> int:
     if value < minimum:
         comparator = "non-negative" if minimum == 0 else "positive"
         raise ConfigError(f"{key} must be {comparator}")
-    return value
-
-
-def _positive_int(value: Any, name: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise ConfigError(f"{name} must be a positive integer")
     return value
 
 
