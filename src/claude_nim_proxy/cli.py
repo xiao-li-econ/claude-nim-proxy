@@ -37,6 +37,7 @@ from .models import (
     ModelInfo,
     compare_catalog_ids,
     default_model_cache_path,
+    load_bundled_model_metadata,
     load_model_cache,
     merge_model_metadata,
     parse_nvidia_model_catalog,
@@ -495,6 +496,12 @@ def _gateway_settings(
             (model.upstream_id for model in cache.models),
             config,
         )
+    curated_model_ids = frozenset(load_bundled_model_metadata())
+    picker_model_ids = tuple(
+        model.upstream_id
+        for model in catalog_models
+        if model.upstream_id in curated_model_ids
+    )
     return GatewaySettings(
         local_token=local_token or secrets.token_urlsafe(32),
         default_model=resolved_model_id,
@@ -506,7 +513,7 @@ def _gateway_settings(
         upstream_connect_timeout_seconds=config.upstream_connect_timeout_seconds,
         upstream_read_timeout_seconds=config.upstream_read_timeout_seconds,
         supports_images=selected_model.supports_images,
-        model_ids=tuple(model.upstream_id for model in catalog_models),
+        model_ids=picker_model_ids,
         model_display_names={
             model.upstream_id: model.display_name for model in (selected_model, *catalog_models)
         },

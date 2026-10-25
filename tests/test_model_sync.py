@@ -7,11 +7,12 @@ import stat
 from pathlib import Path
 from typing import Any
 
+import aiohttp
 import pytest
 import pytest_asyncio
 from aiohttp import web
 
-from claude_nim_proxy.cli import main
+from claude_nim_proxy.cli import _gateway_settings, main
 from claude_nim_proxy.config import load_config
 from claude_nim_proxy.models import (
     ModelCache,
@@ -27,6 +28,7 @@ from claude_nim_proxy.models import (
     resolve_model_metadata,
     save_model_cache,
 )
+from claude_nim_proxy.server import GatewayServer
 
 CURATED_AGENTIC_MODEL_IDS = (
     "deepseek-ai/deepseek-v4.1-flash",
@@ -190,6 +192,8 @@ def test_bundled_metadata_file_is_valid() -> None:
 
     assert "nvidia/nemotron-3-super-120b-a12b" in bundled
     assert bundled["nvidia/nemotron-3-super-120b-a12b"].tool_calling is True
+    assert "nvidia/nemotron-nano-3-30b-a3b" in bundled
+    assert "nvidia/nemotron-3-nano-30b-a3b" not in bundled
 
 
 def test_bundled_metadata_covers_curated_agentic_models() -> None:
@@ -248,6 +252,62 @@ async def catalog_server() -> tuple[str, list[dict[str, Any]], list[str]]:
         yield f"http://127.0.0.1:{port}/v1", requests, model_ids
     finally:
         await runner.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_gateway_discovery_is_limited_to_curated_models_plus_selected_model(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        'default_model = "vendor/selected-uncurated"\n',
+        encoding="utf-8",
+    )
+    config = load_config(config_path, environ={})
+    cache_models = merge_model_metadata(
+        (
+            "nvidia/nemotron-3-super-120b-a12b",
+            "vendor/selected-uncurated",
+            "vendor/unknown",
+        ),
+        config,
+    )
+    save_model_cache(
+        ModelCache(
+            updated_at="2026-10-24T16:18:00Z",
+            upstream_base_url=config.upstream_base_url,
+            models=cache_models,
+        ),
+        default_model_cache_path(),
+    )
+
+    settings = _gateway_settings(
+        config,
+        api_key=None,
+        allow_non_loopback=False,
+        local_token="local-token",
+    )
+    server = GatewayServer(settings)
+    await server.start()
+    try:
+        async with aiohttp.ClientSession() as session, session.get(
+            f"{server.base_url}/v1/models",
+            headers={"Authorization": "Bearer local-token"},
+        ) as response:
+            assert response.status == 200
+            payload = await response.json()
+    finally:
+        await server.stop()
+
+    assert [entry["id"] for entry in payload["data"]] == [
+        "anthropic-nim/vendor/selected-uncurated",
+        "anthropic-nim/nvidia/nemotron-3-super-120b-a12b",
+    ]
+    assert "anthropic-nim/vendor/unknown" not in {
+        entry["id"] for entry in payload["data"]
+    }
 
 
 @pytest.mark.asyncio

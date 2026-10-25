@@ -132,9 +132,12 @@ uv run claude-nim models list
 uv run claude-nim models list --json
 ```
 
-When the cache matches the configured upstream, the gateway advertises its models
-through `GET /v1/models` using IDs such as
-`anthropic-nim/nvidia/nemotron-3-super-120b-a12b`.
+When the cache matches the configured upstream, the gateway advertises the bundled
+curated models that are present in NVIDIA's current catalog through `GET /v1/models`,
+using IDs such as `anthropic-nim/nvidia/nemotron-3-super-120b-a12b`. The explicitly
+selected model is always included, even when it is not curated. The complete catalog
+remains in `models.json` and `models list`; non-curated models remain directly
+selectable with `--model`, `NVIDIA_MODEL`, or `default_model`.
 
 ## Diagnostics
 

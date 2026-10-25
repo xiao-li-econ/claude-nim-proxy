@@ -68,17 +68,6 @@
       "metadata_source": "bundled"
     },
     {
-      "upstream_id": "nvidia/nemotron-3-nano-30b-a3b",
-      "display_name": "NVIDIA Nemotron 3 Nano 30B A3B (NIM)",
-      "context_window": 262144,
-      "max_output_tokens": 32768,
-      "reasoning": true,
-      "input": ["text"],
-      "tool_calling": true,
-      "source": ["nvidia"],
-      "metadata_source": "bundled"
-    },
-    {
       "upstream_id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
       "display_name": "NVIDIA Nemotron 3 Nano Omni 30B A3B Reasoning (NIM)",
       "context_window": 262144,
