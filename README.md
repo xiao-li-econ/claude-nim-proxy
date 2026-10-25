@@ -13,34 +13,32 @@ and metadata-only debug tracing.
 
 ## Installation
 
-The project is not published to PyPI yet, so install it directly from the repository.
-
 Requirements: Python 3.11 or newer, the [Claude Code CLI](https://code.claude.com/docs/en/setup)
 (`claude` on `PATH`), and an NVIDIA API key. The [Pi CLI](https://github.com/badlogic/pi-mono)
 is optional and only used to synchronize the model list.
 
-Install the `claude-nim` command with [uv](https://docs.astral.sh/uv/):
+Install the released package from PyPI with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv tool install git+https://github.com/xiao-li-econ/claude-nim-proxy.git
+uv tool install claude-nim-proxy
 claude-nim --version
 ```
 
 This creates an isolated environment and places the executable in uv's bin directory
 (`~/.local/bin` by default), which must be on `PATH`. Upgrade with
 `uv tool upgrade claude-nim-proxy` and remove it with `uv tool uninstall claude-nim-proxy`.
-Pin a release with `uv tool install "git+https://github.com/xiao-li-econ/claude-nim-proxy.git@v0.1.0"`.
+Pin a release with `uv tool install "claude-nim-proxy==0.1.0"`.
 
 Run a single command without installing anything:
 
 ```bash
-uvx --from git+https://github.com/xiao-li-econ/claude-nim-proxy.git claude-nim run .
+uvx --from claude-nim-proxy claude-nim run .
 ```
 
 With pipx:
 
 ```bash
-pipx install git+https://github.com/xiao-li-econ/claude-nim-proxy.git
+pipx install claude-nim-proxy
 ```
 
 Or in a plain virtual environment:
@@ -48,7 +46,18 @@ Or in a plain virtual environment:
 ```bash
 python3 -m venv ~/.venvs/claude-nim
 source ~/.venvs/claude-nim/bin/activate
-pip install git+https://github.com/xiao-li-econ/claude-nim-proxy.git
+pip install claude-nim-proxy
+```
+
+The examples below use `uv run claude-nim`; when the tool is installed, call
+`claude-nim` directly.
+
+### Install from the repository
+
+To follow the latest unreleased changes, install straight from GitHub:
+
+```bash
+uv tool install git+https://github.com/xiao-li-econ/claude-nim-proxy.git
 ```
 
 To work on the code itself, clone the repository:
