@@ -11,11 +11,50 @@ Anthropic-style error conversion, timeouts, cancellation handling, a credential-
 active model JSON, secure CLI-managed credentials, an isolated Claude Code launcher,
 and metadata-only debug tracing.
 
+## Architecture
+
+```text
+Claude Code
+  │ Anthropic Messages API
+  │ POST /v1/messages
+  ▼
+Local proxy (127.0.0.1)
+  │ translates Anthropic → OpenAI Chat Completions
+  │ POST /v1/chat/completions
+  ▼
+NVIDIA NIM
+  │
+  ▼
+Local proxy
+  │ parses OpenAI JSON/SSE
+  │ translates → Anthropic response/events
+  ▼
+Claude Code
+```
+
+The proxy translates requests, responses, tool calls, and streaming events between
+Anthropic's Messages API and NVIDIA NIM's OpenAI-compatible Chat Completions API.
+
 ## Installation
 
 Requirements: Python 3.11 or newer, the [Claude Code CLI](https://code.claude.com/docs/en/setup)
 (`claude` on `PATH`), and an NVIDIA API key. The [Pi CLI](https://github.com/badlogic/pi-mono)
 is optional and only used to synchronize the model list.
+
+### Platform support
+
+| Platform | Status |
+|---|---|
+| Linux | Supported and covered by CI (`ubuntu-latest`) |
+| macOS | Expected to work — the code uses the same POSIX APIs as Linux — but it is not covered by CI yet |
+| Windows | Not supported yet |
+
+On Windows the POSIX permission model does not exist, so the mode-`0600` credential file
+fallback cannot be used: `chmod` is effectively a no-op there, and the credential reader
+rejects the file as group/world accessible. Use the `NVIDIA_API_KEY` environment variable
+instead — it takes precedence over stored credentials and is never written to disk — or a
+working OS keyring backend. Windows also lacks `loop.add_signal_handler`, so signal
+handling degrades to `KeyboardInterrupt`, and Claude Code itself requires Git Bash or WSL.
 
 Install the released package from PyPI with [uv](https://docs.astral.sh/uv/):
 
@@ -280,30 +319,6 @@ The complete automated and live hosted-NVIDIA procedures are documented in
 [`docs/smoke-tests.md`](docs/smoke-tests.md). Live NVIDIA requests may consume API
 credit and require explicit approval before they are run.
 
-## Architecture
-
-```text
-Claude Code
-  │ Anthropic Messages API
-  │ POST /v1/messages
-  ▼
-Local proxy (127.0.0.1)
-  │ translates Anthropic → OpenAI Chat Completions
-  │ POST /v1/chat/completions
-  ▼
-NVIDIA NIM
-  │
-  ▼
-Local proxy
-  │ parses OpenAI JSON/SSE
-  │ translates → Anthropic response/events
-  ▼
-Claude Code
-```
-
-The proxy translates requests, responses, tool calls, and streaming events between
-Anthropic's Messages API and NVIDIA NIM's OpenAI-compatible Chat Completions API.
-
 ## Privacy
 
 Prompts, project content, tool definitions, tool results, and model responses are sent
@@ -333,7 +348,3 @@ Releases are cut from `main` with a `vX.Y.Z` Git tag; the tag triggers the relea
 workflow, which validates the build, publishes to PyPI, and creates a GitHub release.
 See [`docs/release-process.md`](docs/release-process.md) for the checklist and
 [`CHANGELOG.md`](CHANGELOG.md) for the release history.
-
-## License
-
-Released under the MIT License. See [`LICENSE`](LICENSE).
