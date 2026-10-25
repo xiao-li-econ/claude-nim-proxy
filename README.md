@@ -11,6 +11,63 @@ Anthropic-style error conversion, timeouts, cancellation handling, a credential-
 active model JSON, secure CLI-managed credentials, an isolated Claude Code launcher,
 and metadata-only debug tracing.
 
+## Installation
+
+The project is not published to PyPI yet, so install it directly from the repository.
+
+Requirements: Python 3.11 or newer, the [Claude Code CLI](https://code.claude.com/docs/en/setup)
+(`claude` on `PATH`), and an NVIDIA API key. The [Pi CLI](https://github.com/badlogic/pi-mono)
+is optional and only used to synchronize the model list.
+
+Install the `claude-nim` command with [uv](https://docs.astral.sh/uv/):
+
+```bash
+uv tool install git+https://github.com/xiao-li-econ/claude-nim-proxy.git
+claude-nim --version
+```
+
+This creates an isolated environment and places the executable in uv's bin directory
+(`~/.local/bin` by default), which must be on `PATH`. Upgrade with
+`uv tool upgrade claude-nim-proxy` and remove it with `uv tool uninstall claude-nim-proxy`.
+Pin a release with `uv tool install "git+https://github.com/xiao-li-econ/claude-nim-proxy.git@v0.1.0"`.
+
+Run a single command without installing anything:
+
+```bash
+uvx --from git+https://github.com/xiao-li-econ/claude-nim-proxy.git claude-nim run .
+```
+
+With pipx:
+
+```bash
+pipx install git+https://github.com/xiao-li-econ/claude-nim-proxy.git
+```
+
+Or in a plain virtual environment:
+
+```bash
+python3 -m venv ~/.venvs/claude-nim
+source ~/.venvs/claude-nim/bin/activate
+pip install git+https://github.com/xiao-li-econ/claude-nim-proxy.git
+```
+
+To work on the code itself, clone the repository:
+
+```bash
+git clone https://github.com/xiao-li-econ/claude-nim-proxy.git
+cd claude-nim-proxy
+uv sync --all-groups
+uv run claude-nim run .
+```
+
+After installing, configure a credential and launch Claude Code:
+
+```bash
+claude-nim auth login
+claude-nim models update   # optional; requires the Pi CLI
+claude-nim run .
+```
+
 ## One-command usage
 
 Optionally synchronize the model list from Pi, configure a credential, and launch Claude
@@ -262,3 +319,7 @@ uv run mypy
 ```
 
 `uv.lock` is committed so dependency resolution remains reproducible across machines.
+
+## License
+
+Released under the MIT License. See [`LICENSE`](LICENSE).
