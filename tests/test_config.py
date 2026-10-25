@@ -1,16 +1,25 @@
 from __future__ import annotations
 
+import stat
 from pathlib import Path
 
 import pytest
 
-from claude_nim_proxy.config import ConfigError, UpstreamAuth, load_config
+from claude_nim_proxy.config import (
+    DEFAULT_MODEL,
+    ConfigError,
+    UpstreamAuth,
+    config_sources,
+    load_config,
+    set_config_value,
+)
 
 
 def test_missing_config_file_uses_defaults(tmp_path: Path) -> None:
     config = load_config(tmp_path / "missing.toml", environ={})
 
-    assert config.default_model is None
+    assert config.default_model == DEFAULT_MODEL
+    assert config.verify_model == DEFAULT_MODEL
     assert config.upstream_base_url == "https://integrate.api.nvidia.com/v1"
     assert config.upstream_auth is UpstreamAuth.AUTO
     assert config.disable_experimental_betas is True
@@ -106,3 +115,87 @@ context_window = 200000
 
     with pytest.raises(ConfigError, match="unknown configuration key: model_overrides"):
         load_config(path, environ={})
+
+
+def test_set_config_value_creates_a_private_config_file(tmp_path: Path) -> None:
+    path = tmp_path / "claude-nim" / "config.toml"
+
+    config = set_config_value(path, "default_model", "nvidia/my-model")
+
+    assert config.default_model == "nvidia/my-model"
+    assert path.exists()
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert path.read_text(encoding="utf-8") == 'default_model = "nvidia/my-model"\n'
+    assert load_config(path, environ={}).default_model == "nvidia/my-model"
+
+
+def test_set_config_value_preserves_existing_keys(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('default_model = "nvidia/old"\ndebug = false\n', encoding="utf-8")
+
+    set_config_value(path, "default_model", "nvidia/new")
+
+    content = path.read_text(encoding="utf-8")
+    assert 'default_model = "nvidia/new"' in content
+    assert "debug = false" in content
+    config = load_config(path, environ={})
+    assert config.default_model == "nvidia/new"
+    assert config.debug is False
+
+
+def test_set_config_value_escapes_strings(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+
+    set_config_value(path, "default_model", 'nvidia/weird "quoted" \\ model')
+
+    assert load_config(path, environ={}).default_model == 'nvidia/weird "quoted" \\ model'
+
+
+def test_set_config_value_rejects_an_unknown_key(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+
+    with pytest.raises(ConfigError, match="unknown configuration key: unknown_key"):
+        set_config_value(path, "unknown_key", "value")
+
+    assert not path.exists()
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "message"),
+    [
+        ("listen_port", "not-a-number", "listen_port must be an integer"),
+        ("debug", "perhaps", "debug must be a boolean"),
+        ("upstream_auth", "sometimes", "upstream_auth must be one of"),
+        ("default_model", "", "default_model must be a non-empty string"),
+    ],
+)
+def test_set_config_value_rejects_invalid_values(
+    tmp_path: Path, key: str, value: str, message: str
+) -> None:
+    path = tmp_path / "config.toml"
+
+    with pytest.raises(ConfigError, match=message):
+        set_config_value(path, key, value)
+
+    assert not path.exists()
+
+
+def test_set_config_value_does_not_overwrite_an_invalid_file(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text("listen_port = 'not-a-number'\n", encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="listen_port must be an integer"):
+        set_config_value(path, "default_model", "nvidia/my-model")
+
+    assert path.read_text(encoding="utf-8") == "listen_port = 'not-a-number'\n"
+
+
+def test_config_sources_report_the_effective_origin(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('default_model = "nvidia/file-model"\n', encoding="utf-8")
+
+    sources = config_sources(path, environ={"NVIDIA_BASE_URL": "https://env.test/v1"})
+
+    assert sources["default_model"] == "config.toml"
+    assert sources["upstream_base_url"] == "NVIDIA_BASE_URL"
+    assert sources["listen_port"] == "default"

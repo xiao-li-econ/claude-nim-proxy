@@ -13,20 +13,26 @@ and metadata-only debug tracing.
 
 ## One-command usage
 
-Optionally synchronize the model list from Pi, configure a credential, select a model,
-and launch Claude Code in the current project:
+Optionally synchronize the model list from Pi, configure a credential, and launch Claude
+Code in the current project:
 
 ```bash
 uv run claude-nim models update
 uv run claude-nim auth login
-uv run claude-nim run . --model nvidia/nemotron-3.5-lightning-30b-a3b
+uv run claude-nim run .
 ```
 
-With `default_model` set in `~/.config/claude-nim/config.toml` (or `NVIDIA_MODEL` set),
-the model flag can be omitted:
+The model flag can be omitted. Model selection follows this precedence:
+
+1. `--model`
+2. `NVIDIA_MODEL`
+3. `default_model` in `~/.config/claude-nim/config.toml`
+4. the shipped default model, `minimaxai/minimax-m3.1-flash`
+
+Set a different default with:
 
 ```bash
-uv run claude-nim run .
+uv run claude-nim config set default_model nvidia/nemotron-3.5-lightning-30b-a3b
 ```
 
 Arguments after `--` are passed to Claude Code verbatim:
@@ -45,6 +51,28 @@ claude --settings <absolute-settings-path> [user-supplied Claude Code arguments.
 The temporary settings file contains only the local gateway URL, a random local bearer
 token, and model-routing variables. It is deleted and the proxy is stopped when Claude
 Code exits or receives a termination signal.
+
+## Configuration
+
+`config.toml` holds general proxy settings and is created only by an explicit command:
+
+```bash
+uv run claude-nim config show
+uv run claude-nim config show --json
+uv run claude-nim config set default_model nvidia/nemotron-3.5-lightning-30b-a3b
+```
+
+- `config show` prints the effective configuration and where each value comes from
+  (`config.toml`, an environment variable, or the built-in default).
+- `config set <key> <value>` validates the value, preserves the other settings, and
+  rewrites `~/.config/claude-nim/config.toml` atomically with mode `0600`.
+- Supported keys: `default_model`, `verify_model`, `upstream_base_url`, `upstream_auth`,
+  `listen_host`, `listen_port`, `context_window`, `max_output_tokens`,
+  `disable_experimental_betas`, `upstream_connect_timeout_seconds`,
+  `upstream_read_timeout_seconds`, and `debug`.
+
+The file can also be edited by hand; `config set` rewrites it and therefore drops any
+comments it contained.
 
 ## Credential management
 
@@ -152,9 +180,10 @@ If the refresh fails, `run` warns and continues with the existing active JSON. T
 uv run claude-nim doctor
 ```
 
-`doctor` checks for Claude Code, model selection, credential resolution, loopback port
-availability, and account entitlement to the selected model. The entitlement probe sends
-one minimal authenticated request and may consume a small amount of API credit.
+`doctor` checks for Claude Code, the effective model (including its source), credential
+resolution, loopback port availability, and account entitlement to that model. The
+entitlement probe sends one minimal authenticated request and may consume a small amount
+of API credit.
 
 ## Redacted diagnostics
 

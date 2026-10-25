@@ -22,7 +22,17 @@ from typing import Any
 
 import aiohttp
 
-from .config import AppConfig, ConfigError, UpstreamAuth, load_config
+from .config import (
+    DEFAULT_MODEL,
+    SUPPORTED_CONFIG_KEYS,
+    AppConfig,
+    ConfigError,
+    UpstreamAuth,
+    config_sources,
+    default_config_path,
+    load_config,
+    set_config_value,
+)
 from .credentials import (
     CredentialError,
     CredentialManager,
@@ -80,6 +90,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=_PROGRAM_NAME,
         description="Use NVIDIA NIM models from Claude Code through a local Anthropic proxy.",
+        epilog=(
+            "Model selection: --model > NVIDIA_MODEL > config.toml default_model > "
+            f"{DEFAULT_MODEL}\n"
+            "Change the default with: claude-nim config set default_model <id>"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--version", action="version", version="%(prog)s 0.1.0")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -153,6 +169,25 @@ def build_parser() -> argparse.ArgumentParser:
     model_reset.add_argument("--config", type=Path, help="path to config.toml")
     model_reset.add_argument("--json", action="store_true", help="emit JSON output")
 
+    config_parser = commands.add_parser(
+        "config",
+        help="inspect and update user configuration",
+    )
+    config_commands = config_parser.add_subparsers(dest="config_command", required=True)
+    config_set = config_commands.add_parser(
+        "set",
+        help="set a configuration value in config.toml",
+    )
+    config_set.add_argument("--config", type=Path, help="path to config.toml")
+    config_set.add_argument("key", choices=SUPPORTED_CONFIG_KEYS, help="configuration key")
+    config_set.add_argument("value", help="new value")
+    config_show = config_commands.add_parser(
+        "show",
+        help="show the effective configuration and where each value comes from",
+    )
+    config_show.add_argument("--config", type=Path, help="path to config.toml")
+    config_show.add_argument("--json", action="store_true", help="emit JSON output")
+
     doctor = commands.add_parser("doctor", help="check proxy prerequisites and connectivity")
     _add_common_options(doctor)
     return parser
@@ -197,8 +232,10 @@ def main(argv: list[str] | None = None) -> int:
             namespace.models_command,
             json_output=namespace.json,
         )
+    if namespace.command == "config":
+        return _config_command(namespace)
     if namespace.command == "doctor":
-        return _doctor_command(config)
+        return _doctor_command(config, namespace.config or default_config_path())
     parser.error(f"unknown command: {namespace.command}")
     return 2
 
@@ -790,6 +827,81 @@ def _models_command(config: AppConfig, command: str, *, json_output: bool) -> in
     return 2
 
 
+def _config_command(namespace: argparse.Namespace) -> int:
+    path = namespace.config or default_config_path()
+    if namespace.config_command == "set":
+        try:
+            config = set_config_value(path, namespace.key, namespace.value)
+        except ConfigError as exc:
+            print(f"Configuration error: {exc}", file=sys.stderr)
+            return 2
+        values = _config_values(config)
+        print(f"Set {namespace.key} = {_config_value_text(values[namespace.key])} in {path}")
+        print(f"Effective {namespace.key}: {_config_value_text(values[namespace.key])}")
+        return 0
+    if namespace.config_command == "show":
+        try:
+            config = load_config(path)
+            sources = config_sources(path)
+        except ConfigError as exc:
+            print(f"Configuration error: {exc}", file=sys.stderr)
+            return 2
+        values = _config_values(config)
+        if namespace.json:
+            print(
+                json.dumps(
+                    {
+                        "path": str(path),
+                        "exists": path.exists(),
+                        "values": values,
+                        "sources": sources,
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            )
+            return 0
+        state = "exists" if path.exists() else "not created"
+        print(f"Config file: {path} ({state})")
+        print("Effective configuration:")
+        for key, value in values.items():
+            print(f"  {key} = {_config_value_text(value)}  [{_source_label(sources[key])}]")
+        return 0
+    print(f"Unknown config command: {namespace.config_command}", file=sys.stderr)
+    return 2
+
+
+def _config_values(config: AppConfig) -> dict[str, Any]:
+    return {
+        "default_model": config.default_model,
+        "verify_model": config.verify_model,
+        "upstream_base_url": config.upstream_base_url,
+        "upstream_auth": config.upstream_auth.value,
+        "listen_host": config.listen_host,
+        "listen_port": config.listen_port,
+        "context_window": config.context_window,
+        "max_output_tokens": config.max_output_tokens,
+        "disable_experimental_betas": config.disable_experimental_betas,
+        "upstream_connect_timeout_seconds": config.upstream_connect_timeout_seconds,
+        "upstream_read_timeout_seconds": config.upstream_read_timeout_seconds,
+        "debug": config.debug,
+    }
+
+
+def _config_value_text(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return f'"{value}"'
+    return str(value)
+
+
+def _source_label(source: str) -> str:
+    if source == "default":
+        return "built-in default"
+    return source
+
+
 def _models_list(config: AppConfig, *, json_output: bool) -> int:
     catalog_path = default_model_cache_path()
     try:
@@ -927,7 +1039,7 @@ def _unknown_text(value: bool | None) -> str:
     return "yes" if value else "no"
 
 
-def _doctor_command(config: AppConfig) -> int:
+def _doctor_command(config: AppConfig, config_path: Path) -> int:
     results: list[tuple[bool, str]] = []
 
     try:
@@ -938,7 +1050,10 @@ def _doctor_command(config: AppConfig) -> int:
 
     selected_model = config.default_model
     if selected_model:
-        results.append((True, f"Model: {resolve_upstream_model(selected_model)}"))
+        model_source = _source_label(config_sources(config_path).get("default_model", "default"))
+        results.append(
+            (True, f"Model: {resolve_upstream_model(selected_model)} ({model_source})")
+        )
     else:
         results.append(
             (

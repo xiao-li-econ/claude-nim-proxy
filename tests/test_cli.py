@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from claude_nim_proxy.cli import _resolve_local_token, build_parser, main
+from claude_nim_proxy.config import DEFAULT_MODEL
 from claude_nim_proxy.models import load_model_catalog
 from claude_nim_proxy.pi_models import PiModel, PiModelListError
 
@@ -21,7 +22,7 @@ def test_cli_exposes_the_planned_command_tree() -> None:
     parser = build_parser()
     help_text = parser.format_help()
 
-    for command in ("run", "serve", "auth", "models", "doctor"):
+    for command in ("run", "serve", "auth", "models", "config", "doctor"):
         assert command in help_text
 
 
@@ -76,16 +77,63 @@ with open(os.environ['CAPTURE_PATH'], 'w', encoding='utf-8') as output:
     assert payload["env"]["ANTHROPIC_MODEL"] == "anthropic-nim/nvidia/model"
 
 
-def test_run_requires_an_explicit_model(tmp_path: Path, monkeypatch, capsys) -> None:
+def _capture_run_model(monkeypatch) -> list[str]:
+    captured: list[str] = []
+
+    async def fake_gateway(config, selected_model_id, *args, **kwargs):  # type: ignore[no-untyped-def]
+        captured.append(selected_model_id)
+        return 0
+
+    monkeypatch.setattr("claude_nim_proxy.cli._run_gateway_and_claude", fake_gateway)
+    return captured
+
+
+def test_run_uses_the_shipped_default_model(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.delenv("NVIDIA_MODEL", raising=False)
+    captured = _capture_run_model(monkeypatch)
 
-    status = main(["run", str(tmp_path)])
+    status = main(["run", str(tmp_path), "--upstream-auth", "none"])
 
-    assert status == 2
-    error = capsys.readouterr().err
-    assert "No NVIDIA model is selected" in error
-    assert "--model" in error
+    assert status == 0
+    assert captured == [DEFAULT_MODEL]
+
+
+def test_run_uses_the_configured_default_model(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("NVIDIA_MODEL", raising=False)
+    config_path = tmp_path / "claude-nim" / "config.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text('default_model = "nvidia/configured-model"\n', encoding="utf-8")
+    captured = _capture_run_model(monkeypatch)
+
+    status = main(["run", str(tmp_path), "--upstream-auth", "none"])
+
+    assert status == 0
+    assert captured == ["nvidia/configured-model"]
+
+
+def test_run_model_flag_wins_over_the_configured_default(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("NVIDIA_MODEL", raising=False)
+    config_path = tmp_path / "claude-nim" / "config.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text('default_model = "nvidia/configured-model"\n', encoding="utf-8")
+    captured = _capture_run_model(monkeypatch)
+
+    status = main(
+        [
+            "run",
+            str(tmp_path),
+            "--model",
+            "nvidia/flag-model",
+            "--upstream-auth",
+            "none",
+        ]
+    )
+
+    assert status == 0
+    assert captured == ["nvidia/flag-model"]
 
 
 def test_run_refresh_models_warns_and_continues_when_pi_is_unavailable(
@@ -93,19 +141,20 @@ def test_run_refresh_models_warns_and_continues_when_pi_is_unavailable(
 ) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.delenv("NVIDIA_MODEL", raising=False)
+    captured = _capture_run_model(monkeypatch)
 
     def fail() -> tuple[PiModel, ...]:
         raise PiModelListError("Pi command not found")
 
     monkeypatch.setattr("claude_nim_proxy.cli.run_pi_model_list", fail)
 
-    status = main(["run", str(tmp_path), "--refresh-models"])
+    status = main(["run", str(tmp_path), "--refresh-models", "--upstream-auth", "none"])
 
-    assert status == 2
+    assert status == 0
     error = capsys.readouterr().err
     assert "WARNING: Pi model refresh failed" in error
     assert "using the existing active model JSON" in error
-    assert "No NVIDIA model is selected" in error
+    assert captured == [DEFAULT_MODEL]
 
 
 def test_run_refresh_models_uses_pi_catalog_before_starting(
@@ -124,16 +173,18 @@ def test_run_refresh_models_uses_pi_catalog_before_starting(
         ),
     )
     monkeypatch.setattr("claude_nim_proxy.cli.run_pi_model_list", lambda: pi_models)
+    captured_models = _capture_run_model(monkeypatch)
 
-    status = main(["run", str(tmp_path), "--refresh-models"])
+    status = main(["run", str(tmp_path), "--refresh-models", "--upstream-auth", "none"])
 
-    assert status == 2
+    assert status == 0
     captured = capsys.readouterr()
     assert "Refreshed active model JSON from Pi: 1 models" in captured.out
     catalog = load_model_catalog(tmp_path / "claude-nim" / "models.json")
     assert catalog is not None
     assert catalog.source == "pi"
     assert [model.upstream_id for model in catalog.models] == ["nvidia/refreshed-model"]
+    assert captured_models == [DEFAULT_MODEL]
 
 
 def test_auth_status_does_not_reveal_a_secret(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -370,6 +421,84 @@ sleep 30
             await process.wait()
 
 
+def test_config_set_stores_the_default_model(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+
+    status = main(["config", "set", "default_model", "nvidia/my-model"])
+
+    assert status == 0
+    path = tmp_path / "claude-nim" / "config.toml"
+    assert path.exists()
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert 'default_model = "nvidia/my-model"' in path.read_text(encoding="utf-8")
+    output = capsys.readouterr().out
+    assert "default_model" in output
+    assert "nvidia/my-model" in output
+
+
+def test_config_set_rejects_an_unknown_key(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+
+    with pytest.raises(SystemExit) as captured:
+        main(["config", "set", "unknown_key", "value"])
+
+    assert captured.value.code == 2
+    assert not (tmp_path / "claude-nim" / "config.toml").exists()
+
+
+def test_config_set_rejects_an_invalid_value(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+
+    status = main(["config", "set", "listen_port", "not-a-number"])
+
+    assert status == 2
+    assert "Configuration error" in capsys.readouterr().err
+    assert not (tmp_path / "claude-nim" / "config.toml").exists()
+
+
+def test_config_show_reports_the_effective_default_model(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("NVIDIA_MODEL", raising=False)
+
+    status = main(["config", "show"])
+
+    assert status == 0
+    output = capsys.readouterr().out
+    assert DEFAULT_MODEL in output
+    assert "built-in default" in output
+
+
+def test_config_show_json_reports_value_sources(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("NVIDIA_MODEL", raising=False)
+    assert main(["config", "set", "default_model", "nvidia/my-model"]) == 0
+    capsys.readouterr()
+
+    status = main(["config", "show", "--json"])
+
+    assert status == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["values"]["default_model"] == "nvidia/my-model"
+    assert payload["sources"]["default_model"] == "config.toml"
+    assert payload["exists"] is True
+
+
+def test_config_show_reports_the_environment_as_a_source(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("NVIDIA_MODEL", "nvidia/env-model")
+
+    status = main(["config", "show", "--json"])
+
+    assert status == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["values"]["default_model"] == "nvidia/env-model"
+    assert payload["sources"]["default_model"] == "NVIDIA_MODEL"
+
+
 def test_generated_local_token_is_random_urlsafe_text() -> None:
     token, generated = _resolve_local_token(
         token_stdin=False,
@@ -416,22 +545,21 @@ def test_insecure_token_file_requires_explicit_acceptance(tmp_path: Path) -> Non
     assert generated is False
 
 
-def test_serve_requires_an_explicit_model(tmp_path: Path, monkeypatch, capsys) -> None:
+def test_serve_uses_the_shipped_default_model(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.delenv("NVIDIA_MODEL", raising=False)
-    config_path = tmp_path / "config.toml"
+    captured: list[str] = []
 
-    status = main(
-        [
-            "serve",
-            "--config",
-            str(config_path),
-            "--upstream-auth",
-            "none",
-        ]
-    )
+    async def fake_serve(settings, token, generated):  # type: ignore[no-untyped-def]
+        captured.append(settings.default_model)
+        return 0
 
-    assert status == 2
-    assert "No NVIDIA model is selected" in capsys.readouterr().err
+    monkeypatch.setattr("claude_nim_proxy.cli._serve_until_stopped", fake_serve)
+
+    status = main(["serve", "--upstream-auth", "none"])
+
+    assert status == 0
+    assert captured == [DEFAULT_MODEL]
 
 
 @pytest.mark.asyncio

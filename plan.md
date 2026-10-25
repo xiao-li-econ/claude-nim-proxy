@@ -1,11 +1,11 @@
 # Implementation Plan: Thin Claude Code ↔ NVIDIA NIM Proxy
 
-- **Status:** The MVP and all confirmed refinements are merged into `main`; the user-confirmed Pi-backed active-model-catalog refinement is complete.
+- **Status:** The MVP and all confirmed refinements are merged into `main`; the user-confirmed shipped-default-model and `config set` refinement is in progress on `feature/default-model-and-config-set`.
 - **Research snapshot:** 2026-10-24
 - **Verified local versions:** Python 3.12.3, Claude Code 2.1.310, uv 0.9.2, Node.js 24.14.1
 - **Repository:** Git repository; Phase 4 is implemented in commit `361e816` and Phase 5 in commit `f6ae342`, merged into `main` through PR #4 as merge commit `e377a50`; the curated model-picker refinement is commit `ef609ec`, merged into `main` through PR #5 as merge commit `8717d6b`; the Pi-visible curated catalog expansion is commit `dbf3cf8`, merged into `main` through PR #6 as merge commit `2ea053b`; the Pi-backed active model catalog is commit `a6fa5fd`, merged into `main` through PR #7 as merge commit `6e0854c`.
 - **Current implementation:** The CLI/configuration skeleton, pure Anthropic/OpenAI translators, SSE state machine, authenticated aiohttp gateway, NVIDIA upstream client, Anthropic error conversion, timeout handling, cancellation handling, Pi model-list parsing, bundled model initialization/reset metadata, an atomic credential-free active model JSON, model commands, OS credential-store integration, the warned mode-0600 fallback, auth commands, the one-command Claude Code runner, doctor diagnostics, redacted metadata-only tracing, current-Claude compatibility coverage, and documented smoke tests are implemented.
-- **Next action:** Await the next user-confirmed scope; the MVP and the Pi-backed active-model-catalog refinement are merged into `main`.
+- **Next action:** Implement and validate the user-confirmed shipped default model (`minimaxai/minimax-m3.1-flash`) and the `claude-nim config set default_model <id>` command.
 
 ## Implementation tracker
 
@@ -22,8 +22,9 @@ This table is the durable handoff state between sessions. Update it whenever a p
 | Post-MVP refinement — Curated model picker | Complete | 138 default tests passed (5 live-Claude tests skipped); all 5 opt-in Claude Code compatibility tests passed; Ruff, mypy, and `uv build` passed; commit `ef609ec` | Claude Code discovery now advertises only bundled curated models present in the current catalog plus the explicitly selected model. The complete catalog remains cached and selectable through explicit configuration, and the stale Nemotron Nano alias was removed. |
 | Post-MVP refinement — Pi-visible curated catalog | Complete | 139 default tests passed (5 live-Claude tests skipped); all 5 opt-in Claude Code compatibility tests passed; Ruff, mypy, and `uv build` passed; credential-free cache refreshed to 85 models; commit `dbf3cf8`; merged as `2ea053b` | Adds all 22 NVIDIA models exposed by `pi --list-models nvidia` to the bundled curated catalog while retaining the five existing curated models that Pi does not expose. |
 | Post-MVP refinement — Pi-backed active model catalog | Complete | 144 default tests passed (5 live-Claude tests skipped); all 5 opt-in Claude Code compatibility tests passed; Ruff, mypy, and `uv build` passed; commit `a6fa5fd`; merged as `6e0854c` | Replaces NVIDIA's official catalog integration with a bundled initialization/reset template plus a locally maintained active JSON that is synchronized from `pi --list-models nvidia` when available. Adds `models reset`, `run --refresh-models`, portable model-JSON help, legacy v1 archival, and removes `model_overrides` from `config.toml`. |
+| Post-MVP refinement — Shipped default model and `config set` | Complete (pending merge) | 162 default tests passed (5 live-Claude tests skipped); all 5 opt-in Claude Code compatibility tests passed; Ruff, mypy, and `uv build` passed; commit `0f2d84a` | Ships `minimaxai/minimax-m3.1-flash` as the built-in default model and adds `claude-nim config set default_model <id>` plus `claude-nim config show` so users can store and inspect their own default. `config.toml` is created only by the explicit `config set` command. |
 
-**Current next action:** Await the next user-confirmed scope. All implementation decisions in section 19 are confirmed and binding.
+**Current next action:** Implement and validate the user-confirmed shipped default model and `config set` command. All implementation decisions in section 19 are confirmed and binding.
 
 ## 1. Goal
 
@@ -131,26 +132,35 @@ claude-nim auth logout [OPTIONS]
 claude-nim models list [OPTIONS]
 claude-nim models update [OPTIONS]
 claude-nim models reset [OPTIONS]
+claude-nim config show [OPTIONS]
+claude-nim config set KEY VALUE [OPTIONS]
 claude-nim doctor [OPTIONS]
 ```
 
 ### Primary one-command usage
 
 ```bash
-claude-nim run /path/to/project \
-  --model nvidia/nemotron-3-super-120b-a12b
+claude-nim run /path/to/project
 ```
 
-With a configured default model:
+With an explicit model:
 
 ```bash
+claude-nim run /path/to/project \
+  --model nvidia/nemotron-3.5-lightning-30b-a3b
+```
+
+With a user-configured default model:
+
+```bash
+claude-nim config set default_model nvidia/nemotron-3.5-lightning-30b-a3b
 claude-nim run .
 ```
 
 Additional Claude Code arguments are passed through verbatim:
 
 ```bash
-claude-nim run . --model nvidia/nemotron-3-super-120b-a12b -- --resume
+claude-nim run . --model nvidia/nemotron-3.5-lightning-30b-a3b -- --resume
 ```
 
 ### Subcommand responsibilities
@@ -166,6 +176,8 @@ claude-nim run . --model nvidia/nemotron-3-super-120b-a12b -- --resume
 | `models list` | Show the active NVIDIA models and their local Claude aliases. |
 | `models update` | Replace the active model JSON with a valid non-empty result from `pi --list-models nvidia`. |
 | `models reset` | Restore the bundled initialization/reset template into the active model JSON. |
+| `config show` | Show the effective configuration and whether each value comes from `config.toml`, an environment variable, or a built-in default. |
+| `config set` | Validate and store one configuration value in `config.toml`, creating the file only through this explicit command. |
 | `doctor` | Check Claude Code, credential resolution, upstream reachability, model availability, and loopback port readiness. |
 
 ## 5. One-command startup flow
@@ -176,9 +188,10 @@ claude-nim run . --model nvidia/nemotron-3-super-120b-a12b -- --resume
 2. Resolve the upstream model in this order:
    - `--model`;
    - `NVIDIA_MODEL` environment variable;
-   - user config `default_model`.
+   - user config `default_model`;
+   - the shipped default model `minimaxai/minimax-m3.1-flash`.
 
-   The proxy must not guess a model from the active list. If none of these sources resolves a model, stop with a concise error listing active tool-capable candidates and explain how to select one with `--model`, `NVIDIA_MODEL`, or `default_model`.
+   The proxy never guesses a model from the active list. The shipped default is the only implicit fallback, and it can be replaced with `claude-nim config set default_model <id>`.
 3. Resolve the upstream base URL:
    - `--upstream-base-url`;
    - `NVIDIA_BASE_URL` environment variable;
@@ -620,7 +633,7 @@ The user config path is:
 ~/.config/claude-nim/config.toml
 ```
 
-A missing config file is valid and means that all values use their defaults. The CLI never creates `config.toml` automatically. It parses the file with Python's standard-library `tomllib` and validates it against the schema below. Unknown top-level keys, invalid value types, and invalid enum values are configuration errors with the offending key named; silently ignoring them would hide configuration mistakes.
+A missing config file is valid and means that all values use their defaults. The CLI never creates `config.toml` implicitly; only `claude-nim config set <key> <value>` creates or updates the file, atomically and with mode `0600`. It parses the file with Python's standard-library `tomllib` and validates it against the schema below. Unknown top-level keys, invalid value types, and invalid enum values are configuration errors with the offending key named; silently ignoring them would hide configuration mistakes.
 
 A complete example is:
 
@@ -643,7 +656,7 @@ The supported top-level keys are:
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `default_model` | string | unset | Raw NVIDIA ID or reversible `anthropic-nim/...` gateway ID used when no CLI or environment model is supplied. |
+| `default_model` | string | `minimaxai/minimax-m3.1-flash` | Raw NVIDIA ID or reversible `anthropic-nim/...` gateway ID used when no CLI or environment model is supplied. |
 | `verify_model` | string | `default_model` | Model used by `auth verify` for its explicit minimal authenticated request. |
 | `upstream_base_url` | string | `https://integrate.api.nvidia.com/v1` | OpenAI-compatible NVIDIA base URL, normally ending in `/v1`. |
 | `upstream_auth` | string enum | `auto` | Upstream credential policy: `auto`, `required`, or `none` as defined below. |
@@ -819,7 +832,7 @@ Use a fake `claude` executable and a mocked credential-store backend to verify:
 - Active model-JSON initialization, Pi replacement, reset, legacy archive, invalid-JSON rejection, and no secret persistence.
 - Pi model-table parsing, empty/malformed/duplicate rejection, timeout handling, and `NVIDIA_API_KEY` removal from the subprocess environment.
 - `serve` token sources (`--token-stdin`, `--token-file`, and generated-token output) without accepting a token in command-line arguments.
-- No implicit model selection when `--model`, `NVIDIA_MODEL`, and `default_model` are absent.
+- Shipped default model selection when `--model`, `NVIDIA_MODEL`, and `default_model` are absent, and `config set`/`config show` behavior.
 
 ### Configuration tests
 
@@ -892,7 +905,8 @@ The MVP is complete when:
 - The test suite passes without a live NVIDIA account; live NVIDIA and Claude Code smoke tests are documented separately.
 - The local gateway emits the exact Anthropic response, SSE, and error envelopes specified in section 7.1.
 - The Claude Code child is launched with the exact temporary settings shape and command-line contract specified in section 7.1, with no NVIDIA credential inherited.
-- Configuration precedence and active-catalog capability resolution follow section 13 exactly, and an unspecified model is never selected implicitly.
+- Configuration precedence and active-catalog capability resolution follow section 13 exactly; when no model is supplied anywhere, the shipped default `minimaxai/minimax-m3.1-flash` is used.
+- `claude-nim config set default_model <id>` stores a user default in `config.toml`, and `claude-nim config show` reports the effective value and its source.
 - The implementation tracker records the final validation evidence and completed-phase commit.
 
 ## 19. Confirmed implementation decisions
@@ -912,7 +926,9 @@ All decisions below are confirmed by the user and are binding for implementation
 11. **Run refresh:** `claude-nim run --refresh-models` attempts one Pi synchronization before startup. Failure warns and continues with the existing active JSON; ordinary runs do not invoke Pi.
 12. **Portable help:** Model-maintenance help shows `~/.config/claude-nim/models.json` and `src/claude_nim_proxy/data/nvidia_models.json`, never machine-specific absolute paths.
 13. **Official catalog removal:** The proxy does not query NVIDIA's official `/v1/models` endpoint. `doctor` determines availability through its minimal authenticated request only.
-14. **Configuration scope:** `config.toml` is optional, never auto-created, and contains general proxy settings only. Per-model capability overrides are removed; model maintenance belongs in the active JSON.
+14. **Configuration scope:** `config.toml` is optional, contains general proxy settings only, and is created only by an explicit `claude-nim config set` command. Per-model capability overrides are removed; model maintenance belongs in the active JSON.
+15. **Shipped default model:** When no model is selected through `--model`, `NVIDIA_MODEL`, or `config.toml`, the proxy uses `minimaxai/minimax-m3.1-flash`. Users replace it with `claude-nim config set default_model <id>`.
+16. **Configuration command:** `claude-nim config show` reports the effective configuration and the origin of each value; `claude-nim config set <key> <value>` validates the value, preserves other settings, and rewrites `config.toml` atomically with mode `0600`.
 
 ## 20. Sources
 
