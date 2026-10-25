@@ -48,6 +48,13 @@ If Pi is unavailable, maintain `~/.config/claude-nim/models.json` manually and u
 `claude-nim models list` to validate it. Choose a model from the active list. List
 membership does not prove that the current NVIDIA account is entitled to call a model.
 
+Check the effective model and its source, and optionally change the default:
+
+```bash
+uv run claude-nim config show
+uv run claude-nim config set default_model nvidia/<model-id>
+```
+
 ### 2. Configure and verify the credential
 
 ```bash

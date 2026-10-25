@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -18,6 +19,7 @@ DEFAULT_CONTEXT_WINDOW = 32_768
 DEFAULT_MAX_OUTPUT_TOKENS = 4_096
 DEFAULT_UPSTREAM_CONNECT_TIMEOUT_SECONDS = 10.0
 DEFAULT_UPSTREAM_READ_TIMEOUT_SECONDS = 600.0
+DEFAULT_MODEL = "minimaxai/minimax-m3.1-flash"
 
 
 class ConfigError(ValueError):
@@ -41,7 +43,7 @@ class AppConfig:
     values.
     """
 
-    default_model: str | None = None
+    default_model: str = DEFAULT_MODEL
     verify_model: str | None = None
     upstream_base_url: str = DEFAULT_UPSTREAM_BASE_URL
     upstream_auth: UpstreamAuth = UpstreamAuth.AUTO
@@ -86,6 +88,27 @@ _ENVIRONMENT_KEYS = {
     "CLAUDE_NIM_UPSTREAM_READ_TIMEOUT_SECONDS": "upstream_read_timeout_seconds",
     "CLAUDE_NIM_DEBUG": "debug",
 }
+SUPPORTED_CONFIG_KEYS = tuple(sorted(_TOP_LEVEL_KEYS))
+_BOOLEAN_KEYS = {"disable_experimental_betas", "debug"}
+_INTEGER_KEYS = {"listen_port", "context_window", "max_output_tokens"}
+_NUMBER_KEYS = {
+    "upstream_connect_timeout_seconds",
+    "upstream_read_timeout_seconds",
+}
+_DEFAULT_VALUES: dict[str, Any] = {
+    "default_model": None,
+    "verify_model": None,
+    "upstream_base_url": DEFAULT_UPSTREAM_BASE_URL,
+    "upstream_auth": UpstreamAuth.AUTO.value,
+    "listen_host": DEFAULT_LISTEN_HOST,
+    "listen_port": DEFAULT_LISTEN_PORT,
+    "context_window": DEFAULT_CONTEXT_WINDOW,
+    "max_output_tokens": DEFAULT_MAX_OUTPUT_TOKENS,
+    "disable_experimental_betas": True,
+    "upstream_connect_timeout_seconds": DEFAULT_UPSTREAM_CONNECT_TIMEOUT_SECONDS,
+    "upstream_read_timeout_seconds": DEFAULT_UPSTREAM_READ_TIMEOUT_SECONDS,
+    "debug": False,
+}
 
 
 def default_config_path() -> Path:
@@ -109,24 +132,52 @@ def load_config(
     environment = os.environ if environ is None else environ
     path = config_path if config_path is not None else default_config_path()
     file_values = _read_config_file(path)
-    values: dict[str, Any] = {
-        "default_model": None,
-        "verify_model": None,
-        "upstream_base_url": DEFAULT_UPSTREAM_BASE_URL,
-        "upstream_auth": UpstreamAuth.AUTO.value,
-        "listen_host": DEFAULT_LISTEN_HOST,
-        "listen_port": DEFAULT_LISTEN_PORT,
-        "context_window": DEFAULT_CONTEXT_WINDOW,
-        "max_output_tokens": DEFAULT_MAX_OUTPUT_TOKENS,
-        "disable_experimental_betas": True,
-        "upstream_connect_timeout_seconds": DEFAULT_UPSTREAM_CONNECT_TIMEOUT_SECONDS,
-        "upstream_read_timeout_seconds": DEFAULT_UPSTREAM_READ_TIMEOUT_SECONDS,
-        "debug": False,
-    }
-    values.update(file_values)
+    values: dict[str, Any] = {**_DEFAULT_VALUES, **file_values}
     _apply_environment(values, environment)
+    return _config_from_values(values)
 
-    default_model = _optional_string(values, "default_model")
+
+def set_config_value(path: Path, key: str, raw_value: str) -> AppConfig:
+    """Set one configuration key in config.toml and return the effective configuration.
+
+    The file is created only by this explicit command. Existing values are preserved and
+    validated before the file is replaced atomically.
+    """
+
+    if key not in _TOP_LEVEL_KEYS:
+        raise ConfigError(f"unknown configuration key: {key}")
+    file_values = _read_config_file(path)
+    parsed_value = _parse_config_value(key, raw_value)
+    values: dict[str, Any] = {**_DEFAULT_VALUES, **file_values, key: parsed_value}
+    config = _config_from_values(values)
+    _write_config_file(path, {**file_values, key: parsed_value})
+    return config
+
+
+def config_sources(
+    path: Path,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Return where each configuration key's effective value comes from."""
+
+    environment = os.environ if environ is None else environ
+    file_values = _read_config_file(path)
+    sources: dict[str, str] = {}
+    for key in _TOP_LEVEL_KEYS:
+        variable = _environment_variable_for(key)
+        if key in file_values:
+            sources[key] = "config.toml"
+        elif variable is not None and variable in environment:
+            sources[key] = variable
+        else:
+            sources[key] = "default"
+    if "verify_model" not in file_values and "CLAUDE_NIM_VERIFY_MODEL" not in environment:
+        sources["verify_model"] = sources["default_model"]
+    return sources
+
+
+def _config_from_values(values: Mapping[str, Any]) -> AppConfig:
+    default_model = _optional_string(values, "default_model") or DEFAULT_MODEL
     verify_model = _optional_string(values, "verify_model")
     upstream_base_url = _required_string(values, "upstream_base_url")
     listen_host = _required_string(values, "listen_host")
@@ -187,6 +238,97 @@ def _read_config_file(path: Path) -> dict[str, Any]:
     if unknown:
         raise ConfigError(f"unknown configuration key: {unknown[0]}")
     return parsed
+
+
+def _environment_variable_for(key: str) -> str | None:
+    for variable, mapped_key in _ENVIRONMENT_KEYS.items():
+        if mapped_key == key:
+            return variable
+    return None
+
+
+def _parse_config_value(key: str, raw_value: str) -> Any:
+    if key in _BOOLEAN_KEYS:
+        normalized = raw_value.strip().lower()
+        if normalized in {"1", "true", "yes"}:
+            return True
+        if normalized in {"0", "false", "no"}:
+            return False
+        raise ConfigError(f"{key} must be a boolean")
+    if key in _INTEGER_KEYS:
+        try:
+            return int(raw_value)
+        except ValueError as exc:
+            raise ConfigError(f"{key} must be an integer") from exc
+    if key in _NUMBER_KEYS:
+        try:
+            return float(raw_value)
+        except ValueError as exc:
+            raise ConfigError(f"{key} must be a number") from exc
+    return raw_value
+
+
+def _write_config_file(path: Path, values: Mapping[str, Any]) -> None:
+    payload = _serialize_config(values)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        descriptor, temporary_name = tempfile.mkstemp(
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            text=True,
+        )
+    except OSError as exc:
+        raise ConfigError(f"cannot write configuration file {path}: {exc.strerror}") from exc
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as temporary_file:
+            os.chmod(temporary_path, 0o600)
+            temporary_file.write(payload)
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+        os.replace(temporary_path, path)
+    except OSError as exc:
+        raise ConfigError(f"cannot write configuration file {path}: {exc.strerror}") from exc
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def _serialize_config(values: Mapping[str, Any]) -> str:
+    lines = [f"{key} = {_toml_value(key, value)}" for key, value in values.items()]
+    return "\n".join(lines) + "\n"
+
+
+def _toml_value(key: str, value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return repr(value)
+    if isinstance(value, str):
+        return _toml_string(value)
+    raise ConfigError(f"configuration key {key} cannot be written to config.toml")
+
+
+def _toml_string(value: str) -> str:
+    escaped: list[str] = []
+    for character in value:
+        if character == "\\":
+            escaped.append("\\\\")
+        elif character == '"':
+            escaped.append('\\"')
+        elif character == "\n":
+            escaped.append("\\n")
+        elif character == "\r":
+            escaped.append("\\r")
+        elif character == "\t":
+            escaped.append("\\t")
+        elif ord(character) < 0x20:
+            escaped.append(f"\\u{ord(character):04x}")
+        else:
+            escaped.append(character)
+    return '"' + "".join(escaped) + '"'
 
 
 def _apply_environment(values: dict[str, Any], environment: Mapping[str, str]) -> None:
