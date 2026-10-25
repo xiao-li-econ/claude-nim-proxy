@@ -82,7 +82,7 @@ In Claude Code, verify all of the following:
 
 1. `/status` reports the loopback `ANTHROPIC_BASE_URL`.
 2. A one-shot text prompt produces incremental output.
-3. The model picker shows IDs beginning with `anthropic-nim/`.
+3. The model picker shows curated IDs beginning with `anthropic-nim/`, plus the explicitly selected model.
 4. A request to read a local file completes the `tool_use` → tool result → final answer
    round trip.
 5. A subagent and a background agent both use the selected NVIDIA model rather than an

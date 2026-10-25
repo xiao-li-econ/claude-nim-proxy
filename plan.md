@@ -1,11 +1,11 @@
 # Implementation Plan: Thin Claude Code ↔ NVIDIA NIM Proxy
 
-- **Status:** Phases 4 and 5 are merged into `main` through PR #4; the MVP implementation is complete and ready for optional approved live NVIDIA smoke testing.
+- **Status:** The MVP is merged into `main` through PR #4; the user-confirmed curated model-picker refinement is complete in open PR #5.
 - **Research snapshot:** 2026-10-24
 - **Verified local versions:** Python 3.12.3, Claude Code 2.1.310, uv 0.9.2, Node.js 24.14.1
-- **Repository:** Git repository; Phase 4 is implemented in commit `361e816` and Phase 5 in commit `f6ae342`, merged into `main` through PR #4 as merge commit `e377a50` (Phase 3 remains merged into remote `main` as `bb97dc7`).
+- **Repository:** Git repository; Phase 4 is implemented in commit `361e816` and Phase 5 in commit `f6ae342`, merged into `main` through PR #4 as merge commit `e377a50`; the curated model-picker refinement is commit `ef609ec` in open PR #5.
 - **Current implementation:** The CLI/configuration skeleton, pure Anthropic/OpenAI translators, SSE state machine, authenticated aiohttp gateway, NVIDIA upstream client, Anthropic error conversion, timeout handling, cancellation handling, NVIDIA catalog parsing, bundled capability metadata, an atomic credential-free model cache, model commands, OS credential-store integration, the warned mode-0600 fallback, auth commands, the one-command Claude Code runner, doctor diagnostics, redacted metadata-only tracing, current-Claude compatibility coverage, and documented smoke tests are implemented.
-- **Next action:** Run the documented hosted NVIDIA smoke test only after explicit approval for potentially billable requests. All section 19 decisions are confirmed.
+- **Next action:** Review and merge PR #5 while retaining the complete NVIDIA catalog in the credential-free cache.
 
 ## Implementation tracker
 
@@ -19,8 +19,9 @@ This table is the durable handoff state between sessions. Update it whenever a p
 | Phase 3 — Models and discovery | Complete | 117 tests passed; Ruff, mypy, and `uv build` passed; commits `61723cf`, `33dab7a` | Added public NVIDIA catalog refresh, bundled capability metadata, capability precedence, atomic credential-free cache storage, reversible aliases, model list/update commands, cached gateway discovery, and model-specific image capability checks. The curated overlay was expanded to 19 hosted agentic/tool-calling models with NVIDIA-published context, output, reasoning, image, and tool-calling values. |
 | Phase 4 — Credentials and one-command runner | Complete | 133 tests passed; Ruff, mypy, and `uv build` passed; commit `361e816` | Added `auth login/status/verify/logout`, environment/keyring/file-fallback credential resolution, secure prompts, a one-command Claude Code launcher, isolated mode-0600 settings, signal forwarding and cleanup, and doctor diagnostics. |
 | Phase 5 — Compatibility hardening and documentation | Complete | 137 default tests passed (5 live-Claude tests skipped); all 5 opt-in Claude Code 2.1.310 compatibility tests passed; Ruff, mypy, and `uv build` passed; commit `f6ae342` | Added metadata-only redacted tracing, a 2,000-delta long-stream test, opt-in installed-Claude coverage for text/tools/images/subagents/background agents, final README guidance, and documented offline/live smoke procedures. Hosted NVIDIA inference was not run because it requires explicit billable-request approval. |
+| Post-MVP refinement — Curated model picker | Complete | 138 default tests passed (5 live-Claude tests skipped); all 5 opt-in Claude Code compatibility tests passed; Ruff, mypy, and `uv build` passed; commit `ef609ec` | Claude Code discovery now advertises only bundled curated models present in the current catalog plus the explicitly selected model. The complete catalog remains cached and selectable through explicit configuration, and the stale Nemotron Nano alias was removed. |
 
-**Current next action:** Optionally run the documented hosted NVIDIA smoke test after explicit approval for potentially billable requests. All implementation decisions in section 19 are confirmed and binding.
+**Current next action:** Review and merge PR #5 from `feature/curated-model-picker` (`ef609ec`, `4f10c76`). All implementation decisions in section 19 are confirmed and binding.
 
 ## 1. Goal
 
@@ -562,6 +563,8 @@ The curated overlay covers the hosted models that are practical with Claude Code
 
 A model absent from the bundled capability catalog remains selectable and receives conservative runtime defaults: `context_window = 32768`, `max_output_tokens = 4096`, `reasoning = null`, `tool_calling = null`, and `input = ["text"]`. Unknown tool-calling support is allowed on a best-effort basis because rejecting it would make an otherwise functional NIM model unusable with Claude Code; unknown image support is rejected locally with a clear capability error. A user override can replace any of these values.
 
+The credential-free cache retains the complete authoritative NVIDIA catalog. Claude Code's `/model` discovery endpoint is intentionally narrower: it advertises bundled curated models that are present in the current catalog, plus the explicitly selected model even when that model lacks curated metadata. Uncatalogued or non-curated models remain directly selectable through `--model`, `NVIDIA_MODEL`, or `default_model`.
+
 A model's presence in `/v1/models` does not guarantee that every NVIDIA key is entitled to call it. `doctor` and `auth verify` must distinguish catalog discovery from actual account entitlement and report a 404 from NVIDIA as an entitlement/model-availability problem.
 
 ## 12. Credential management
@@ -883,7 +886,7 @@ The MVP is complete when:
 - Text responses stream incrementally with a valid Anthropic event sequence.
 - Claude Code can call a local tool and complete the tool-result round trip.
 - Built-in model aliases, subagents, and background requests resolve to the selected NVIDIA model.
-- Multiple NVIDIA models are selectable through `/model` using `anthropic-nim/...` discovery IDs.
+- Curated NVIDIA models present in the current catalog are selectable through `/model` using `anthropic-nim/...` discovery IDs; the explicitly selected model is always included.
 - `claude-nim models update` refreshes model IDs directly from NVIDIA, works without a stored credential, and never persists one in the model cache.
 - `claude-nim auth login` securely prompts for and stores the NVIDIA key; `auth status` never reveals it; `auth logout` removes the stored copy.
 - The NVIDIA key is not present in the Claude Code child environment, logs, cache, or process arguments.
@@ -905,6 +908,7 @@ All decisions below are confirmed by the user and are binding for implementation
 5. **Experimental Anthropic betas:** disable them by default in the Claude Code child, with an explicit override for testing.
 6. **Native NIM Anthropic endpoint:** not applicable and out of scope. The project will not implement native Anthropic passthrough or a local-NIM bypass.
 7. **Credential storage:** prefer the OS credential store through `keyring`; use a mode-`0600` file only as an explicitly warned, unencrypted fallback.
+8. **Model picker scope:** Claude Code discovery advertises only bundled curated models present in the current NVIDIA catalog, plus the explicitly selected model. The complete catalog remains in the local cache, and non-curated models remain selectable through explicit model configuration.
 
 ## 20. Sources
 
