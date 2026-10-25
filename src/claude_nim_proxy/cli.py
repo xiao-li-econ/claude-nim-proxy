@@ -1,7 +1,7 @@
 """Command-line entry point for claude-nim.
 
-The standalone gateway and NVIDIA model catalog commands are implemented. Commands that
-depend on later credential or runner phases return a clear not-implemented status.
+The command tree includes credential management, the standalone gateway, NVIDIA model
+catalog operations, diagnostics, and the one-command Claude Code runner.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import json
 import os
 import secrets
 import signal
+import socket
 import stat
 import sys
 from dataclasses import replace
@@ -22,6 +23,13 @@ from typing import Any
 import aiohttp
 
 from .config import AppConfig, ConfigError, UpstreamAuth, load_config
+from .credentials import (
+    CredentialError,
+    CredentialManager,
+    CredentialSource,
+    ResolvedCredential,
+)
+from .diagnostics import configure_debug, set_debug_secrets
 from .models import (
     ModelCache,
     ModelCacheError,
@@ -35,9 +43,21 @@ from .models import (
     resolve_model_metadata,
     save_model_cache,
 )
+from .runner import (
+    ClaudeLaunchError,
+    create_temporary_settings,
+    gateway_environment,
+    launch_claude,
+    managed_settings_conflicts,
+    remove_temporary_settings,
+    resolve_claude_executable,
+    sanitized_child_environment,
+    wait_for_health,
+)
 from .server import GatewayServer, GatewaySettings
+from .translate.anthropic_to_openai import resolve_upstream_model
 from .translate.errors import AnthropicError
-from .upstream import NvidiaCatalogClient
+from .upstream import NvidiaCatalogClient, NvidiaUpstreamClient
 
 _PROGRAM_NAME = "claude-nim"
 
@@ -76,7 +96,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--replace", action="store_true", help="replace an existing stored credential"
     )
     auth_commands.add_parser("status", help="show credential readiness without revealing the key")
-    auth_commands.add_parser("verify", help="verify the credential with a billable request")
+    verify = auth_commands.add_parser(
+        "verify", help="verify the credential with a billable request"
+    )
+    verify.add_argument("--config", type=Path, help="path to config.toml")
+    verify.add_argument("--model", help="raw NVIDIA model ID or anthropic-nim/ gateway alias")
+    verify.add_argument("--upstream-base-url", help="OpenAI-compatible NVIDIA base URL")
     auth_commands.add_parser("logout", help="remove the stored NVIDIA API credential")
 
     models = commands.add_parser("models", help="inspect and refresh NVIDIA models")
@@ -110,9 +135,15 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         parser.error(str(exc))
         return 2
+    configure_debug(config.debug)
 
     if namespace.command == "run":
-        return _run_skeleton(config, namespace.project_dir, passthrough)
+        return _run_with_claude(
+            config,
+            namespace.project_dir,
+            passthrough,
+            allow_non_loopback=namespace.allow_non_loopback,
+        )
     if namespace.command == "serve":
         return _serve_gateway(
             config,
@@ -122,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
             allow_non_loopback=namespace.allow_non_loopback,
         )
     if namespace.command == "auth":
-        return _auth_skeleton(namespace.auth_command)
+        return _auth_command(config, namespace)
     if namespace.command == "models":
         return _models_command(
             config,
@@ -130,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
             json_output=namespace.json,
         )
     if namespace.command == "doctor":
-        return _doctor_skeleton(config)
+        return _doctor_command(config)
     parser.error(f"unknown command: {namespace.command}")
     return 2
 
@@ -214,13 +245,168 @@ def _resolved_config(namespace: argparse.Namespace) -> AppConfig:
     return replace(config, **updates)
 
 
-def _run_skeleton(config: AppConfig, project_dir: str, passthrough: list[str]) -> int:
-    del config, project_dir, passthrough
-    print(
-        "claude-nim run is not available yet; the one-command runner is planned for Phase 4.",
-        file=sys.stderr,
+def _run_with_claude(
+    config: AppConfig,
+    project_dir: str,
+    claude_arguments: list[str],
+    *,
+    allow_non_loopback: bool,
+) -> int:
+    try:
+        project_path = Path(project_dir).expanduser().resolve()
+    except OSError as exc:
+        print(f"Cannot resolve project directory {project_dir}: {exc}", file=sys.stderr)
+        return 2
+    if not project_path.exists() or not project_path.is_dir():
+        print(
+            f"Project directory does not exist or is not a directory: {project_path}",
+            file=sys.stderr,
+        )
+        return 2
+    selected_model_id = config.default_model
+    if not selected_model_id:
+        print(_missing_model_message(config), file=sys.stderr)
+        return 2
+
+    try:
+        credential = _resolve_upstream_credential(config)
+    except CredentialError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    try:
+        resolve_claude_executable()
+    except ClaudeLaunchError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    try:
+        return asyncio.run(
+            _run_gateway_and_claude(
+                config,
+                selected_model_id,
+                project_path,
+                claude_arguments,
+                credential,
+                allow_non_loopback=allow_non_loopback,
+            )
+        )
+    except (ClaudeLaunchError, CredentialError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        return 130
+
+
+async def _run_gateway_and_claude(
+    config: AppConfig,
+    selected_model_id: str,
+    project_path: Path,
+    claude_arguments: list[str],
+    credential: ResolvedCredential | None,
+    *,
+    allow_non_loopback: bool,
+) -> int:
+    local_token = secrets.token_urlsafe(32)
+    set_debug_secrets(
+        secret
+        for secret in (local_token, credential.api_key if credential is not None else None)
+        if secret is not None
     )
-    return 1
+    try:
+        settings = _gateway_settings(
+            config,
+            api_key=credential.api_key if credential is not None else None,
+            allow_non_loopback=allow_non_loopback,
+            local_token=local_token,
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    server = GatewayServer(settings)
+    temporary_settings: Path | None = None
+    try:
+        base_url = await server.start()
+        await wait_for_health(base_url)
+        selected_model = resolve_model_metadata(selected_model_id, config)
+        values = gateway_environment(
+            config,
+            base_url=base_url,
+            local_token=local_token,
+            model=selected_model,
+        )
+        conflicts = managed_settings_conflicts(values)
+        if conflicts:
+            print(
+                "WARNING: system-managed Claude Code settings override: "
+                + ", ".join(conflicts),
+                file=sys.stderr,
+            )
+        temporary_settings = create_temporary_settings(values)
+        child_environment = sanitized_child_environment(os.environ, values)
+        return await launch_claude(
+            project_dir=project_path,
+            claude_arguments=claude_arguments,
+            environment=child_environment,
+            settings_path=temporary_settings,
+        )
+    finally:
+        if temporary_settings is not None:
+            remove_temporary_settings(temporary_settings)
+        await server.stop()
+
+
+def _missing_model_message(config: AppConfig) -> str:
+    candidates: list[str] = []
+    try:
+        cache = load_model_cache(default_model_cache_path())
+    except ModelCacheError:
+        cache = None
+    if cache is not None and cache.upstream_base_url.rstrip("/") == config.upstream_base_url.rstrip(
+        "/"
+    ):
+        candidates = [
+            model.upstream_id
+            for model in merge_model_metadata(
+                (item.upstream_id for item in cache.models),
+                config,
+            )
+            if model.tool_calling is not False
+        ]
+    message = (
+        "No NVIDIA model is selected. Use --model, set NVIDIA_MODEL, "
+        "or set default_model in config.toml."
+    )
+    if candidates:
+        message += " Cached tool-capable candidates: " + ", ".join(candidates[:10]) + "."
+    return message
+
+
+def _resolve_upstream_credential(config: AppConfig) -> ResolvedCredential | None:
+    if config.upstream_auth is UpstreamAuth.NONE:
+        return None
+    manager = CredentialManager()
+    credential = manager.resolve(allow_prompt=True)
+    if credential is None:
+        raise CredentialError(
+            "No NVIDIA API credential is configured. Set NVIDIA_API_KEY or run "
+            "'claude-nim auth login'."
+        )
+    if credential.source is CredentialSource.FILE:
+        _warn_file_fallback(manager, credential)
+    return credential
+
+
+def _warn_file_fallback(
+    manager: CredentialManager,
+    credential: ResolvedCredential,
+) -> None:
+    if credential.source is CredentialSource.FILE:
+        print(
+            "WARNING: the NVIDIA credential is stored unencrypted in "
+            f"{manager.fallback_path} with mode 0600.",
+            file=sys.stderr,
+        )
 
 
 def _serve_gateway(
@@ -231,7 +417,8 @@ def _serve_gateway(
     allow_insecure_token_file: bool,
     allow_non_loopback: bool,
 ) -> int:
-    if not config.default_model:
+    selected_model_id = config.default_model
+    if not selected_model_id:
         print(
             "No NVIDIA model is selected. Use --model, set NVIDIA_MODEL, "
             "or set default_model in config.toml.",
@@ -249,56 +436,24 @@ def _serve_gateway(
         print(str(exc), file=sys.stderr)
         return 2
 
-    api_key = (
-        None if config.upstream_auth is UpstreamAuth.NONE else os.environ.get("NVIDIA_API_KEY")
-    )
-    if config.upstream_auth is not UpstreamAuth.NONE and not api_key:
-        print(
-            "No NVIDIA API credential is configured. Set NVIDIA_API_KEY; "
-            "OS credential-store support will be added with the auth commands.",
-            file=sys.stderr,
-        )
+    try:
+        credential = _resolve_upstream_credential(config)
+    except CredentialError as exc:
+        print(str(exc), file=sys.stderr)
         return 2
+    set_debug_secrets(
+        secret
+        for secret in (token, credential.api_key if credential is not None else None)
+        if secret
+    )
 
-    selected_model = resolve_model_metadata(config.default_model, config)
-    catalog_models: tuple[ModelInfo, ...] = ()
     try:
-        cache = load_model_cache(default_model_cache_path())
-    except ModelCacheError as exc:
-        print(f"WARNING: ignoring invalid model cache: {exc}", file=sys.stderr)
-        cache = None
-    if cache is not None and cache.upstream_base_url.rstrip("/") == config.upstream_base_url.rstrip(
-        "/"
-    ):
-        catalog_models = merge_model_metadata(
-            (model.upstream_id for model in cache.models),
+        settings = _gateway_settings(
             config,
-        )
-
-    try:
-        settings = GatewaySettings(
-            local_token=token,
-            default_model=config.default_model,
-            upstream_base_url=config.upstream_base_url,
-            api_key=api_key,
-            upstream_auth=config.upstream_auth,
-            listen_host=config.listen_host,
-            listen_port=config.listen_port,
-            upstream_connect_timeout_seconds=config.upstream_connect_timeout_seconds,
-            upstream_read_timeout_seconds=config.upstream_read_timeout_seconds,
-            supports_images=selected_model.supports_images,
-            model_ids=tuple(model.upstream_id for model in catalog_models),
-            model_display_names={
-                model.upstream_id: model.display_name for model in (selected_model, *catalog_models)
-            },
-            model_image_support={
-                model.upstream_id: model.supports_images
-                for model in (selected_model, *catalog_models)
-            },
-            known_model_ids=tuple(model.upstream_id for model in (selected_model, *catalog_models)),
-            context_window=selected_model.context_window,
-            max_output_tokens=selected_model.max_output_tokens,
+            api_key=credential.api_key if credential is not None else None,
             allow_non_loopback=allow_non_loopback,
+            local_token=token,
+            selected_model_id=selected_model_id,
         )
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
@@ -313,6 +468,57 @@ def _serve_gateway(
         return asyncio.run(_serve_until_stopped(settings, token, generated))
     except KeyboardInterrupt:
         return 0
+
+
+def _gateway_settings(
+    config: AppConfig,
+    *,
+    api_key: str | None,
+    allow_non_loopback: bool,
+    local_token: str | None = None,
+    selected_model_id: str | None = None,
+) -> GatewaySettings:
+    resolved_model_id = selected_model_id or config.default_model
+    if not resolved_model_id:
+        raise ValueError("No NVIDIA model is selected.")
+    selected_model = resolve_model_metadata(resolved_model_id, config)
+    catalog_models: tuple[ModelInfo, ...] = ()
+    try:
+        cache = load_model_cache(default_model_cache_path())
+    except ModelCacheError as exc:
+        print(f"WARNING: ignoring invalid model cache: {exc}", file=sys.stderr)
+        cache = None
+    if cache is not None and cache.upstream_base_url.rstrip("/") == config.upstream_base_url.rstrip(
+        "/"
+    ):
+        catalog_models = merge_model_metadata(
+            (model.upstream_id for model in cache.models),
+            config,
+        )
+    return GatewaySettings(
+        local_token=local_token or secrets.token_urlsafe(32),
+        default_model=resolved_model_id,
+        upstream_base_url=config.upstream_base_url,
+        api_key=api_key,
+        upstream_auth=config.upstream_auth,
+        listen_host=config.listen_host,
+        listen_port=config.listen_port,
+        upstream_connect_timeout_seconds=config.upstream_connect_timeout_seconds,
+        upstream_read_timeout_seconds=config.upstream_read_timeout_seconds,
+        supports_images=selected_model.supports_images,
+        model_ids=tuple(model.upstream_id for model in catalog_models),
+        model_display_names={
+            model.upstream_id: model.display_name for model in (selected_model, *catalog_models)
+        },
+        model_image_support={
+            model.upstream_id: model.supports_images
+            for model in (selected_model, *catalog_models)
+        },
+        known_model_ids=tuple(model.upstream_id for model in (selected_model, *catalog_models)),
+        context_window=selected_model.context_window,
+        max_output_tokens=selected_model.max_output_tokens,
+        allow_non_loopback=allow_non_loopback,
+    )
 
 
 async def _serve_until_stopped(
@@ -386,13 +592,141 @@ def _resolve_local_token(
     return secrets.token_urlsafe(32), True
 
 
-def _auth_skeleton(command: str) -> int:
+def _auth_command(config: AppConfig, namespace: argparse.Namespace) -> int:
+    command = namespace.auth_command
+    manager = CredentialManager()
+    try:
+        if command == "login":
+            return _auth_login(manager, replace=namespace.replace)
+        if command == "status":
+            return _auth_status(manager)
+        if command == "verify":
+            verify_model = namespace.model or config.verify_model or config.default_model
+            return _auth_verify(config, manager, verify_model)
+        if command == "logout":
+            return _auth_logout(manager)
+    except CredentialError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(f"Unknown auth command: {command}", file=sys.stderr)
+    return 2
+
+
+def _auth_login(manager: CredentialManager, *, replace: bool) -> int:
+    if manager.has_stored_credential() and not replace:
+        print(
+            "A stored NVIDIA credential already exists. Use 'claude-nim auth login --replace' "
+            "to replace it.",
+            file=sys.stderr,
+        )
+        return 2
+    source = manager.prompt_and_store()
+    if source is CredentialSource.FILE:
+        print(
+            f"WARNING: no OS credential store is available. The unencrypted credential was "
+            f"stored in {manager.fallback_path} with mode 0600.",
+            file=sys.stderr,
+        )
+        print("Stored NVIDIA credential in file fallback.", file=sys.stderr)
+    else:
+        print("Stored NVIDIA credential in the OS credential store.", file=sys.stderr)
+    return 0
+
+
+def _auth_status(manager: CredentialManager) -> int:
+    credential = manager.resolve(allow_prompt=False)
+    if credential is None:
+        print("NVIDIA credential: not configured", file=sys.stderr)
+        return 2
+    print(f"NVIDIA credential: configured ({credential.source})", file=sys.stderr)
+    if credential.source is CredentialSource.FILE:
+        print(
+            f"WARNING: the credential is stored unencrypted in {manager.fallback_path}.",
+            file=sys.stderr,
+        )
+    return 0
+
+
+def _auth_verify(
+    config: AppConfig,
+    manager: CredentialManager,
+    verify_model: str | None,
+) -> int:
+    if not verify_model:
+        print(
+            "No verification model is selected. Use --model, set CLAUDE_NIM_VERIFY_MODEL, "
+            "or set verify_model/default_model in config.toml.",
+            file=sys.stderr,
+        )
+        return 2
+    credential = manager.resolve(allow_prompt=True)
+    if credential is None:
+        print(
+            "No NVIDIA API credential is configured. Set NVIDIA_API_KEY or run "
+            "'claude-nim auth login'.",
+            file=sys.stderr,
+        )
+        return 2
+    if credential.source is CredentialSource.FILE:
+        _warn_file_fallback(manager, credential)
+    set_debug_secrets((credential.api_key,))
     print(
-        f"claude-nim auth {command} is not available yet; "
-        "credential support is planned for Phase 4.",
+        "Sending one minimal authenticated NVIDIA request; this may consume a small amount "
+        "of API credit.",
         file=sys.stderr,
     )
-    return 1
+    raw_model = resolve_upstream_model(verify_model)
+    payload = {
+        "model": raw_model,
+        "messages": [{"role": "user", "content": "Reply with OK."}],
+        "max_tokens": 1,
+        "stream": False,
+    }
+    try:
+        return asyncio.run(
+            _auth_verify_request(
+                config,
+                credential.api_key,
+                payload,
+            )
+        )
+    except AnthropicError as exc:
+        print(f"NVIDIA credential verification failed: {exc.message}", file=sys.stderr)
+        return 2
+
+
+async def _auth_verify_request(
+    config: AppConfig,
+    api_key: str,
+    payload: dict[str, Any],
+) -> int:
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None)) as session:
+        client = NvidiaUpstreamClient(
+            session,
+            base_url=config.upstream_base_url,
+            api_key=api_key,
+            auth_mode=UpstreamAuth.REQUIRED,
+            connect_timeout_seconds=config.upstream_connect_timeout_seconds,
+            read_timeout_seconds=config.upstream_read_timeout_seconds,
+        )
+        response = await client.complete(payload)
+    print("NVIDIA credential verified successfully.", file=sys.stderr)
+    del response
+    return 0
+
+
+def _auth_logout(manager: CredentialManager) -> int:
+    removed = manager.delete_stored()
+    if removed:
+        print("Removed the stored NVIDIA credential.", file=sys.stderr)
+    else:
+        print("No stored NVIDIA credential was found.", file=sys.stderr)
+    if os.environ.get("NVIDIA_API_KEY"):
+        print(
+            "The NVIDIA_API_KEY environment variable was not changed.",
+            file=sys.stderr,
+        )
+    return 0
 
 
 def _models_command(config: AppConfig, command: str, *, json_output: bool) -> int:
@@ -525,13 +859,124 @@ def _unknown_text(value: bool | None) -> str:
     return "yes" if value else "no"
 
 
-def _doctor_skeleton(config: AppConfig) -> int:
-    del config
-    print(
-        "claude-nim doctor is not available yet; connectivity checks are planned for Phase 4.",
-        file=sys.stderr,
-    )
-    return 1
+def _doctor_command(config: AppConfig) -> int:
+    results: list[tuple[bool, str]] = []
+
+    try:
+        executable = resolve_claude_executable()
+        results.append((True, f"Claude Code: found at {executable}"))
+    except ClaudeLaunchError as exc:
+        results.append((False, str(exc)))
+
+    selected_model = config.default_model
+    if selected_model:
+        results.append((True, f"Model: {resolve_upstream_model(selected_model)}"))
+    else:
+        results.append(
+            (
+                False,
+                "Model: not selected; use --model, NVIDIA_MODEL, or default_model",
+            )
+        )
+
+    credential: ResolvedCredential | None = None
+    credential_error: CredentialError | None = None
+    try:
+        credential = CredentialManager().resolve(allow_prompt=False)
+    except CredentialError as exc:
+        credential_error = exc
+        results.append((False, f"Credential: {exc}"))
+    if credential is not None:
+        results.append((True, f"Credential: configured ({credential.source})"))
+        set_debug_secrets((credential.api_key,))
+        if credential.source is CredentialSource.FILE:
+            print(
+                "WARNING: the NVIDIA credential is stored unencrypted in "
+                f"{CredentialManager().fallback_path} with mode 0600.",
+                file=sys.stderr,
+            )
+    elif credential_error is None:
+        results.append(
+            (
+                False,
+                "Credential: not configured; set NVIDIA_API_KEY or run 'claude-nim auth login'",
+            )
+        )
+
+    port_ready, port_message = _doctor_port(config.listen_host, config.listen_port)
+    results.append((port_ready, f"Listener: {port_message}"))
+
+    if selected_model and credential is not None:
+        print(
+            "The model entitlement probe sends one minimal authenticated request and may "
+            "consume a small amount of API credit.",
+            file=sys.stderr,
+        )
+        upstream_ready, upstream_message = asyncio.run(
+            _doctor_upstream(config, credential.api_key, selected_model)
+        )
+        results.append((upstream_ready, f"NVIDIA upstream: {upstream_message}"))
+    else:
+        results.append((False, "NVIDIA upstream: not checked because prerequisites failed"))
+
+    for passed, message in results:
+        print(f"{'PASS' if passed else 'FAIL'}: {message}")
+    return 0 if all(passed for passed, _ in results) else 2
+
+
+def _doctor_port(host: str, port: int) -> tuple[bool, str]:
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as listener:
+            listener.bind((host, port))
+    except OSError as exc:
+        return False, f"cannot bind {host}:{port} ({exc.strerror or exc})"
+    return True, f"{host}:{port or 'ephemeral'} is available"
+
+
+async def _doctor_upstream(
+    config: AppConfig,
+    api_key: str,
+    selected_model: str,
+) -> tuple[bool, str]:
+    raw_model = resolve_upstream_model(selected_model)
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None)) as session:
+            catalog_client = NvidiaCatalogClient(
+                session,
+                base_url=config.upstream_base_url,
+                connect_timeout_seconds=config.upstream_connect_timeout_seconds,
+                read_timeout_seconds=config.upstream_read_timeout_seconds,
+            )
+            catalog_payload = await catalog_client.fetch_catalog()
+            catalog_ids = parse_nvidia_model_catalog(catalog_payload)
+            if raw_model not in catalog_ids:
+                return False, f"model {raw_model} is not present in the NVIDIA catalog"
+
+            upstream_client = NvidiaUpstreamClient(
+                session,
+                base_url=config.upstream_base_url,
+                api_key=api_key,
+                auth_mode=UpstreamAuth.REQUIRED,
+                connect_timeout_seconds=config.upstream_connect_timeout_seconds,
+                read_timeout_seconds=config.upstream_read_timeout_seconds,
+            )
+            await upstream_client.complete(
+                {
+                    "model": raw_model,
+                    "messages": [{"role": "user", "content": "Reply with OK."}],
+                    "max_tokens": 1,
+                    "stream": False,
+                }
+            )
+    except AnthropicError as exc:
+        if exc.status == 404:
+            return (
+                False,
+                f"model {raw_model} is not available to this NVIDIA account (404 entitlement)",
+            )
+        return False, exc.message
+    return True, f"catalog and account entitlement checks passed for {raw_model}"
 
 
 if __name__ == "__main__":  # pragma: no cover
