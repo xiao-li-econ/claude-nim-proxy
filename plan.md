@@ -23,6 +23,7 @@ This table is the durable handoff state between sessions. Update it whenever a p
 | Post-MVP refinement — Pi-visible curated catalog | Complete | 139 default tests passed (5 live-Claude tests skipped); all 5 opt-in Claude Code compatibility tests passed; Ruff, mypy, and `uv build` passed; credential-free cache refreshed to 85 models; commit `dbf3cf8`; merged as `2ea053b` | Adds all 22 NVIDIA models exposed by `pi --list-models nvidia` to the bundled curated catalog while retaining the five existing curated models that Pi does not expose. |
 | Post-MVP refinement — Pi-backed active model catalog | Complete | 144 default tests passed (5 live-Claude tests skipped); all 5 opt-in Claude Code compatibility tests passed; Ruff, mypy, and `uv build` passed; commit `a6fa5fd`; merged as `6e0854c` | Replaces NVIDIA's official catalog integration with a bundled initialization/reset template plus a locally maintained active JSON that is synchronized from `pi --list-models nvidia` when available. Adds `models reset`, `run --refresh-models`, portable model-JSON help, legacy v1 archival, and removes `model_overrides` from `config.toml`. |
 | Post-MVP refinement — Shipped default model and `config set` | Complete | 162 default tests passed (5 live-Claude tests skipped); all 5 opt-in Claude Code compatibility tests passed; Ruff, mypy, and `uv build` passed; commit `0f2d84a`; merged as `1f14c77` | Ships `minimaxai/minimax-m3.1-flash` as the built-in default model and adds `claude-nim config set default_model <id>` plus `claude-nim config show` so users can store and inspect their own default. `config.toml` is created only by the explicit `config set` command. |
+| Post-MVP refinement — Public installation docs and MIT license | In progress | Pending implementation and validation on `feature/installation-docs-and-license` | Adds an installation section to `README.md` (uv tool, uvx, pipx, venv+pip, clone), the MIT `LICENSE` file, and PEP 639 license metadata plus classifiers in `pyproject.toml` so the repository can be published publicly. |
 
 **Current next action:** Await the next user-confirmed scope. All implementation decisions in section 19 are confirmed and binding.
 
@@ -726,6 +727,7 @@ If `--model`, `NVIDIA_MODEL`, and `default_model` are all absent, the CLI must f
 
 ```text
 AGENTS.md
+LICENSE
 plan.md
 pyproject.toml
 README.md
