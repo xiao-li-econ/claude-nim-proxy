@@ -22,6 +22,7 @@ from typing import Any
 
 import aiohttp
 
+from . import __version__
 from .config import (
     DEFAULT_MODEL,
     SUPPORTED_CONFIG_KEYS,
@@ -97,7 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--version", action="version", version="%(prog)s 0.1.0")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     commands = parser.add_subparsers(dest="command", required=True)
 
     run = commands.add_parser("run", help="run the proxy and Claude Code together")

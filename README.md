@@ -320,6 +320,11 @@ uv run mypy
 
 `uv.lock` is committed so dependency resolution remains reproducible across machines.
 
+Releases are cut from `main` with a `vX.Y.Z` Git tag; the tag triggers the release
+workflow, which validates the build, publishes to PyPI, and creates a GitHub release.
+See [`docs/release-process.md`](docs/release-process.md) for the checklist and
+[`CHANGELOG.md`](CHANGELOG.md) for the release history.
+
 ## License
 
 Released under the MIT License. See [`LICENSE`](LICENSE).

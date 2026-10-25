@@ -26,6 +26,12 @@ classifiers = [
 [project.scripts]
 claude-nim = "claude_nim_proxy.cli:main"
 
+[project.urls]
+Homepage = "https://github.com/xiao-li-econ/claude-nim-proxy"
+Repository = "https://github.com/xiao-li-econ/claude-nim-proxy"
+Issues = "https://github.com/xiao-li-econ/claude-nim-proxy/issues"
+Changelog = "https://github.com/xiao-li-econ/claude-nim-proxy/blob/main/CHANGELOG.md"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
