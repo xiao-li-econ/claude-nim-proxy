@@ -1,11 +1,11 @@
 # Implementation Plan: Thin Claude Code ↔ NVIDIA NIM Proxy
 
-- **Status:** The MVP is merged into `main` through PR #4; the user-confirmed curated model-picker refinement is in progress on `feature/curated-model-picker`.
+- **Status:** The MVP is merged into `main` through PR #4; the user-confirmed curated model-picker refinement is complete on `feature/curated-model-picker`.
 - **Research snapshot:** 2026-10-24
 - **Verified local versions:** Python 3.12.3, Claude Code 2.1.310, uv 0.9.2, Node.js 24.14.1
-- **Repository:** Git repository; Phase 4 is implemented in commit `361e816` and Phase 5 in commit `f6ae342`, merged into `main` through PR #4 as merge commit `e377a50` (Phase 3 remains merged into remote `main` as `bb97dc7`).
+- **Repository:** Git repository; Phase 4 is implemented in commit `361e816` and Phase 5 in commit `f6ae342`, merged into `main` through PR #4 as merge commit `e377a50`; the curated model-picker refinement is commit `ef609ec` on `feature/curated-model-picker`.
 - **Current implementation:** The CLI/configuration skeleton, pure Anthropic/OpenAI translators, SSE state machine, authenticated aiohttp gateway, NVIDIA upstream client, Anthropic error conversion, timeout handling, cancellation handling, NVIDIA catalog parsing, bundled capability metadata, an atomic credential-free model cache, model commands, OS credential-store integration, the warned mode-0600 fallback, auth commands, the one-command Claude Code runner, doctor diagnostics, redacted metadata-only tracing, current-Claude compatibility coverage, and documented smoke tests are implemented.
-- **Next action:** Implement and validate curated-only Claude Code model discovery while retaining the complete NVIDIA catalog in the credential-free cache.
+- **Next action:** Review and merge the curated model-picker refinement while retaining the complete NVIDIA catalog in the credential-free cache.
 
 ## Implementation tracker
 
@@ -19,9 +19,9 @@ This table is the durable handoff state between sessions. Update it whenever a p
 | Phase 3 — Models and discovery | Complete | 117 tests passed; Ruff, mypy, and `uv build` passed; commits `61723cf`, `33dab7a` | Added public NVIDIA catalog refresh, bundled capability metadata, capability precedence, atomic credential-free cache storage, reversible aliases, model list/update commands, cached gateway discovery, and model-specific image capability checks. The curated overlay was expanded to 19 hosted agentic/tool-calling models with NVIDIA-published context, output, reasoning, image, and tool-calling values. |
 | Phase 4 — Credentials and one-command runner | Complete | 133 tests passed; Ruff, mypy, and `uv build` passed; commit `361e816` | Added `auth login/status/verify/logout`, environment/keyring/file-fallback credential resolution, secure prompts, a one-command Claude Code launcher, isolated mode-0600 settings, signal forwarding and cleanup, and doctor diagnostics. |
 | Phase 5 — Compatibility hardening and documentation | Complete | 137 default tests passed (5 live-Claude tests skipped); all 5 opt-in Claude Code 2.1.310 compatibility tests passed; Ruff, mypy, and `uv build` passed; commit `f6ae342` | Added metadata-only redacted tracing, a 2,000-delta long-stream test, opt-in installed-Claude coverage for text/tools/images/subagents/background agents, final README guidance, and documented offline/live smoke procedures. Hosted NVIDIA inference was not run because it requires explicit billable-request approval. |
-| Post-MVP refinement — Curated model picker | In progress | Branch `feature/curated-model-picker` | Filter Claude Code discovery to curated models present in the current NVIDIA catalog, always include the explicitly selected model, retain the complete catalog in the cache, and remove the stale curated Nemotron alias. |
+| Post-MVP refinement — Curated model picker | Complete | 138 default tests passed (5 live-Claude tests skipped); all 5 opt-in Claude Code compatibility tests passed; Ruff, mypy, and `uv build` passed; commit `ef609ec` | Claude Code discovery now advertises only bundled curated models present in the current catalog plus the explicitly selected model. The complete catalog remains cached and selectable through explicit configuration, and the stale Nemotron Nano alias was removed. |
 
-**Current next action:** Complete the user-confirmed curated model-picker refinement on `feature/curated-model-picker`. All implementation decisions in section 19 are confirmed and binding.
+**Current next action:** Review and merge `feature/curated-model-picker` (`ef609ec`). All implementation decisions in section 19 are confirmed and binding.
 
 ## 1. Goal
 
