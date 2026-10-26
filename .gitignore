@@ -18,6 +18,10 @@ venv/
 .coverage.*
 htmlcov/
 
+# Local planning and agent instructions
+/plan.md
+/AGENTS.md
+
 # Local configuration and secrets
 .env
 .env.*

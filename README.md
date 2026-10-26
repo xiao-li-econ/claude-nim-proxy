@@ -1,15 +1,8 @@
 # claude-nim-proxy
 
-A thin local translator that lets Claude Code use NVIDIA NIM models through the Anthropic Messages API.
-
-The current implementation includes the Phase 1 translators, the Phase 2 local gateway,
-Phase 3 model discovery, the Phase 4 credential manager and one-command runner, and
-Phase 5 compatibility hardening with redacted diagnostics. It provides strict typed
-configuration, Anthropic/OpenAI request and response translation, incremental SSE
-translation, an authenticated loopback HTTP gateway, an NVIDIA upstream client,
-Anthropic-style error conversion, timeouts, cancellation handling, a credential-free
-active model JSON, secure CLI-managed credentials, an isolated Claude Code launcher,
-and metadata-only debug tracing.
+`claude-nim-proxy` is a lightweight local gateway that lets Claude Code use NVIDIA NIM
+models. It translates Claude Code's Anthropic API traffic to NVIDIA's OpenAI-compatible
+API and can launch Claude Code with a configured model and credential in one command.
 
 ## Architecture
 
@@ -88,8 +81,7 @@ source ~/.venvs/claude-nim/bin/activate
 pip install claude-nim-proxy
 ```
 
-The examples below use `uv run claude-nim`; when the tool is installed, call
-`claude-nim` directly.
+All usage examples below assume `claude-nim` is installed and available on `PATH`.
 
 ### Install from the repository
 
@@ -105,7 +97,6 @@ To work on the code itself, clone the repository:
 git clone https://github.com/xiao-li-econ/claude-nim-proxy.git
 cd claude-nim-proxy
 uv sync --all-groups
-uv run claude-nim run .
 ```
 
 After installing, configure a credential and launch Claude Code:
@@ -122,9 +113,9 @@ Optionally synchronize the model list from Pi, configure a credential, and launc
 Code in the current project:
 
 ```bash
-uv run claude-nim models update
-uv run claude-nim auth login
-uv run claude-nim run .
+claude-nim models update
+claude-nim auth login
+claude-nim run .
 ```
 
 The model flag can be omitted. Model selection follows this precedence:
@@ -137,13 +128,13 @@ The model flag can be omitted. Model selection follows this precedence:
 Set a different default with:
 
 ```bash
-uv run claude-nim config set default_model nvidia/nemotron-3.5-lightning-30b-a3b
+claude-nim config set default_model nvidia/nemotron-3.5-lightning-30b-a3b
 ```
 
 Arguments after `--` are passed to Claude Code verbatim:
 
 ```bash
-uv run claude-nim run . --model nvidia/nemotron-3.5-lightning-30b-a3b -- --resume
+claude-nim run . --model nvidia/nemotron-3.5-lightning-30b-a3b -- --resume
 ```
 
 `run` starts the loopback proxy on an ephemeral port, waits for its health check, creates
@@ -162,9 +153,9 @@ Code exits or receives a termination signal.
 `config.toml` holds general proxy settings and is created only by an explicit command:
 
 ```bash
-uv run claude-nim config show
-uv run claude-nim config show --json
-uv run claude-nim config set default_model nvidia/nemotron-3.5-lightning-30b-a3b
+claude-nim config show
+claude-nim config show --json
+claude-nim config set default_model nvidia/nemotron-3.5-lightning-30b-a3b
 ```
 
 - `config show` prints the effective configuration and where each value comes from
@@ -184,10 +175,10 @@ comments it contained.
 The CLI owns the NVIDIA credential lifecycle:
 
 ```bash
-uv run claude-nim auth login
-uv run claude-nim auth status
-uv run claude-nim auth verify
-uv run claude-nim auth logout
+claude-nim auth login
+claude-nim auth status
+claude-nim auth verify
+claude-nim auth logout
 ```
 
 - `auth login` securely prompts with `getpass` and stores the key in the OS credential
@@ -215,7 +206,7 @@ loopback proxy.
 
 ```bash
 NVIDIA_API_KEY=nvapi-... \
-  uv run claude-nim serve --model nvidia/nemotron-3.5-lightning-30b-a3b
+  claude-nim serve --model nvidia/nemotron-3.5-lightning-30b-a3b
 ```
 
 The generated local bearer token and base URL are printed to standard error as an
@@ -240,7 +231,7 @@ src/claude_nim_proxy/data/nvidia_models.json
 If the Pi CLI is installed, synchronize the active list from Pi's NVIDIA provider:
 
 ```bash
-uv run claude-nim models update
+claude-nim models update
 ```
 
 This runs `pi --list-models nvidia`. A successful, non-empty result replaces the active
@@ -254,14 +245,14 @@ top-level `"source"` to `"manual"`. A successful `models update` overwrites manu
 changes. Restore the shipped list with:
 
 ```bash
-uv run claude-nim models reset
+claude-nim models reset
 ```
 
 List active IDs, reversible Claude Code aliases, and resolved capabilities:
 
 ```bash
-uv run claude-nim models list
-uv run claude-nim models list --json
+claude-nim models list
+claude-nim models list --json
 ```
 
 The gateway advertises every model in the active JSON through `GET /v1/models`, using
@@ -273,7 +264,7 @@ outside the list remain directly selectable with `--model`, `NVIDIA_MODEL`, or
 To refresh from Pi as part of a run:
 
 ```bash
-uv run claude-nim run . --refresh-models
+claude-nim run . --refresh-models
 ```
 
 If the refresh fails, `run` warns and continues with the existing active JSON. The
@@ -282,7 +273,7 @@ If the refresh fails, `run` warns and continues with the existing active JSON. T
 ## Diagnostics
 
 ```bash
-uv run claude-nim doctor
+claude-nim doctor
 ```
 
 `doctor` checks for Claude Code, the effective model (including its source), credential
@@ -295,7 +286,7 @@ of API credit.
 Enable metadata-only debug tracing with `--debug` or `CLAUDE_NIM_DEBUG=1`:
 
 ```bash
-uv run claude-nim serve --model nvidia/nemotron-3.5-lightning-30b-a3b --debug
+claude-nim serve --model nvidia/nemotron-3.5-lightning-30b-a3b --debug
 ```
 
 Debug output records request method/path, selected model, stream mode, and upstream
